@@ -1,0 +1,8 @@
+int main() {
+    int value = 1;
+    {
+        int value = 5;
+        value = value + 1;
+    }
+    return value;
+}

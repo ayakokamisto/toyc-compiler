@@ -7,13 +7,18 @@ ToyC is a simplified subset of C. This project is a ToyC compiler targeting RISC
 ## 项目状态 / Project Status
 
 当前已完成 Lexer、TokenStream，以及 ToyC 全部语法产生式的 Parser。Parser 输出为
-`ast::CompUnit`。Sema、IR 生成和 CodeGen 正在分阶段开发中。
+`ast::CompUnit`。Driver 已接入 Lexer、Parser 和 Parser Diagnostic。Sema、IR 生成和
+CodeGen 正在分阶段开发中。
 
 Lexer, TokenStream, and the complete ToyC Parser are implemented. Parser produces an
-`ast::CompUnit`. Sema, IR generation, and CodeGen are under staged development.
+`ast::CompUnit`. Driver integrates Lexer, Parser, and Parser diagnostics. Sema, IR
+generation, and CodeGen are under staged development.
 
-Parser 出现 Error 级语法诊断时，Driver 应输出诊断并停止进入 Sema、IR 和 CodeGen。
+Parser 出现 Error 级语法诊断时，Driver 输出诊断并停止进入 Sema、IR 和 CodeGen。
 语义分析输入边界见 `docs/contracts/sema-input-contract.md`。
+
+当前默认模式在 Parser 成功后静默返回0，stdout 保留给后续 RISC-V32 汇编输出。
+集成回归规格位于 `tests/integration/cases/`。
 
 ## 构建与测试 / Build and Test
 

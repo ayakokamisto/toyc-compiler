@@ -11,6 +11,19 @@
 
 成员四可从开发初期使用手写 IR 用例验证后端接口、调用约定和栈帧方案。
 
+## Driver 集成主链路
+
+编译器主链路固定为：
+
+```text
+stdin -> Lexer -> Parser -> Sema -> IRGenerator -> verifyModule -> CodeGen -> stdout
+```
+
+成员一已完成 Lexer、Parser 和 Parser Diagnostic 的 Driver 接入。成员二交付 Sema
+公开入口后，成员一负责将 Parser 成功产生的 `ast::CompUnit` 接入
+`Sema::analyze(...)`。Driver 只在 Parser 与 Sema 均成功后调用 IRGenerator，并只在
+`verifyModule()` 成功后调用 CodeGen。
+
 ## main 单分支协作规则
 
 仓库仅使用 `main` 分支。`main` 是唯一共享开发线、唯一集成线和最终提交线。

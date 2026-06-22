@@ -1,0 +1,6 @@
+int main() {
+    int zero = 0;
+    if (zero != 0 && 10 / zero > 1)
+        return 1;
+    return 2;
+}
