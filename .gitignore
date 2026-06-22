@@ -1,0 +1,12 @@
+# Build directory
+build/
+
+# Compiled executables
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+
+# Agent files
+AGENTS.md
