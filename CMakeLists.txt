@@ -16,6 +16,7 @@ endfunction()
 
 add_library(toyc_frontend
     src/lexer/lexer.cpp
+    src/parser/parser.cpp
 )
 
 target_include_directories(toyc_frontend
@@ -51,3 +52,21 @@ target_link_libraries(token_stream_tests PRIVATE toyc_frontend)
 toyc_apply_warnings(token_stream_tests)
 
 add_test(NAME token_stream_tests COMMAND token_stream_tests)
+
+add_executable(parser_p1_tests
+    tests/frontend/parser_p1_tests.cpp
+)
+
+target_link_libraries(parser_p1_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p1_tests)
+
+add_test(NAME parser_p1_tests COMMAND parser_p1_tests)
+
+add_executable(parser_p2_tests
+    tests/frontend/parser_p2_tests.cpp
+)
+
+target_link_libraries(parser_p2_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p2_tests)
+
+add_test(NAME parser_p2_tests COMMAND parser_p2_tests)

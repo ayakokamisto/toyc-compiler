@@ -1,0 +1,386 @@
+#include "parser/parser.h"
+
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <utility>
+
+namespace toyc::parser {
+namespace {
+
+SourceLocation tokenEnd(const Token& token) {
+    return SourceLocation{token.location.line,
+                          token.location.column + static_cast<int>(token.lexeme.size())};
+}
+
+SourceRange tokenRange(const Token& token) {
+    return SourceRange{token.location, tokenEnd(token)};
+}
+
+bool startsTopLevelItem(TokenKind kind) {
+    return kind == TokenKind::KwConst || kind == TokenKind::KwInt ||
+           kind == TokenKind::KwVoid;
+}
+
+bool startsExpr(TokenKind kind) {
+    return kind == TokenKind::IntegerLiteral || kind == TokenKind::Identifier ||
+           kind == TokenKind::LParen || kind == TokenKind::Plus ||
+           kind == TokenKind::Minus || kind == TokenKind::Bang;
+}
+
+ast::ExprPtr makeBinaryExpr(TokenKind op, ast::ExprPtr left, ast::ExprPtr right) {
+    auto expression = std::make_unique<ast::BinaryExpr>();
+    expression->range = SourceRange{left->range.begin, right->range.end};
+    expression->op = op;
+    expression->left = std::move(left);
+    expression->right = std::move(right);
+    return expression;
+}
+
+} // namespace
+
+Parser::Parser(TokenStream& tokens) : tokens_(tokens) {}
+
+std::unique_ptr<ast::CompUnit> Parser::parseCompUnit() {
+    auto unit = std::make_unique<ast::CompUnit>();
+    unit->range.begin = tokens_.peek().location;
+
+    if (tokens_.peek().kind == TokenKind::Eof) {
+        reportError(tokenRange(tokens_.peek()), "expected at least one top-level declaration");
+        unit->range.end = tokens_.peek().location;
+        return unit;
+    }
+
+    while (tokens_.peek().kind != TokenKind::Eof) {
+        const Token* const start = &tokens_.peek();
+        try {
+            unit->declarations.push_back(parseTopLevelItem());
+        } catch (const ParseError& error) {
+            reportError(tokenRange(tokens_.peek()), error.what());
+            if (&tokens_.peek() == start && tokens_.peek().kind != TokenKind::Eof) {
+                (void)tokens_.consume();
+            }
+            synchronizeTopLevel();
+        }
+    }
+
+    unit->range.end = tokens_.peek().location;
+    return unit;
+}
+
+std::unique_ptr<ast::Expr> Parser::parseExpr() {
+    try {
+        return parseLogicalOrExpr();
+    } catch (const ParseError& error) {
+        reportError(tokenRange(tokens_.peek()), error.what());
+        return nullptr;
+    }
+}
+
+bool Parser::hasError() const noexcept {
+    return std::any_of(diagnostics_.begin(), diagnostics_.end(), [](const Diagnostic& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Error;
+    });
+}
+
+const std::vector<Diagnostic>& Parser::diagnostics() const noexcept {
+    return diagnostics_;
+}
+
+ast::DeclPtr Parser::parseTopLevelItem() {
+    if (tokens_.peek().kind == TokenKind::KwConst) {
+        return parseConstDecl();
+    }
+
+    if (tokens_.peek().kind == TokenKind::KwInt) {
+        if (tokens_.peek(1).kind == TokenKind::Identifier &&
+            tokens_.peek(2).kind == TokenKind::LParen) {
+            return parseFuncDef(ast::TypeKind::Int);
+        }
+        return parseVarDecl();
+    }
+
+    if (tokens_.peek().kind == TokenKind::KwVoid) {
+        return parseFuncDef(ast::TypeKind::Void);
+    }
+
+    (void)tokens_.expect(TokenKind::KwInt, "expected top-level declaration or function");
+    return nullptr;
+}
+
+ast::DeclPtr Parser::parseDecl() {
+    if (tokens_.peek().kind == TokenKind::KwConst) {
+        return parseConstDecl();
+    }
+    return parseVarDecl();
+}
+
+std::unique_ptr<ast::VarDecl> Parser::parseVarDecl() {
+    const Token& begin = tokens_.expect(TokenKind::KwInt, "expected 'int' in variable declaration");
+    const Token& name = tokens_.expect(TokenKind::Identifier, "expected variable name");
+    (void)tokens_.expect(TokenKind::Equal, "expected '=' in variable declaration");
+    ast::ExprPtr initializer = parseLogicalOrExpr();
+    const Token& end = tokens_.expect(TokenKind::Semicolon, "expected ';' after variable declaration");
+
+    auto declaration = std::make_unique<ast::VarDecl>();
+    declaration->range = SourceRange{begin.location, tokenEnd(end)};
+    declaration->name = name.lexeme;
+    declaration->initializer = std::move(initializer);
+    return declaration;
+}
+
+std::unique_ptr<ast::ConstDecl> Parser::parseConstDecl() {
+    const Token& begin = tokens_.expect(TokenKind::KwConst, "expected 'const'");
+    (void)tokens_.expect(TokenKind::KwInt, "expected 'int' after 'const'");
+    const Token& name = tokens_.expect(TokenKind::Identifier, "expected constant name");
+    (void)tokens_.expect(TokenKind::Equal, "expected '=' in constant declaration");
+    ast::ExprPtr initializer = parseLogicalOrExpr();
+    const Token& end = tokens_.expect(TokenKind::Semicolon, "expected ';' after constant declaration");
+
+    auto declaration = std::make_unique<ast::ConstDecl>();
+    declaration->range = SourceRange{begin.location, tokenEnd(end)};
+    declaration->name = name.lexeme;
+    declaration->initializer = std::move(initializer);
+    return declaration;
+}
+
+std::unique_ptr<ast::FuncDef> Parser::parseFuncDef(ast::TypeKind returnType) {
+    const TokenKind returnTokenKind =
+        returnType == ast::TypeKind::Int ? TokenKind::KwInt : TokenKind::KwVoid;
+    const Token& begin = tokens_.expect(returnTokenKind, "expected function return type");
+    const Token& name = tokens_.expect(TokenKind::Identifier, "expected function name");
+    (void)tokens_.expect(TokenKind::LParen, "expected '(' after function name");
+
+    std::vector<std::unique_ptr<ast::Param>> parameters;
+    if (tokens_.peek().kind != TokenKind::RParen) {
+        parameters.push_back(parseParam());
+        while (tokens_.match(TokenKind::Comma)) {
+            parameters.push_back(parseParam());
+        }
+    }
+
+    (void)tokens_.expect(TokenKind::RParen, "expected ')' after parameter list");
+    std::unique_ptr<ast::BlockStmt> body = parseBlockStmt();
+
+    auto function = std::make_unique<ast::FuncDef>();
+    function->range = SourceRange{begin.location, body->range.end};
+    function->returnType = returnType;
+    function->name = name.lexeme;
+    function->parameters = std::move(parameters);
+    function->body = std::move(body);
+    return function;
+}
+
+std::unique_ptr<ast::Param> Parser::parseParam() {
+    const Token& begin = tokens_.expect(TokenKind::KwInt, "expected 'int' in parameter");
+    const Token& name = tokens_.expect(TokenKind::Identifier, "expected parameter name");
+
+    auto parameter = std::make_unique<ast::Param>();
+    parameter->range = SourceRange{begin.location, tokenEnd(name)};
+    parameter->name = name.lexeme;
+    return parameter;
+}
+
+ast::StmtPtr Parser::parseStmt() {
+    if (tokens_.peek().kind == TokenKind::LBrace) {
+        return parseBlockStmt();
+    }
+
+    if (tokens_.peek().kind == TokenKind::Semicolon) {
+        const Token& semicolon = tokens_.consume();
+        auto statement = std::make_unique<ast::EmptyStmt>();
+        statement->range = tokenRange(semicolon);
+        return statement;
+    }
+
+    if (startsExpr(tokens_.peek().kind)) {
+        ast::ExprPtr expression = parseLogicalOrExpr();
+        const SourceLocation begin = expression->range.begin;
+        const Token& semicolon =
+            tokens_.expect(TokenKind::Semicolon, "expected ';' after expression statement");
+        auto statement = std::make_unique<ast::ExprStmt>();
+        statement->range = SourceRange{begin, tokenEnd(semicolon)};
+        statement->expression = std::move(expression);
+        return statement;
+    }
+
+    (void)tokens_.expect(TokenKind::Semicolon, "expected statement");
+    return nullptr;
+}
+
+std::unique_ptr<ast::BlockStmt> Parser::parseBlockStmt() {
+    const Token& begin = tokens_.expect(TokenKind::LBrace, "expected '{' to start block");
+    auto block = std::make_unique<ast::BlockStmt>();
+
+    while (tokens_.peek().kind != TokenKind::RBrace &&
+           tokens_.peek().kind != TokenKind::Eof) {
+        const Token* const start = &tokens_.peek();
+        try {
+            block->statements.push_back(parseStmt());
+        } catch (const ParseError& error) {
+            reportError(tokenRange(tokens_.peek()), error.what());
+            if (&tokens_.peek() == start && tokens_.peek().kind != TokenKind::Eof) {
+                (void)tokens_.consume();
+            }
+            synchronizeStatement();
+        }
+    }
+
+    const Token& end = tokens_.expect(TokenKind::RBrace, "expected '}' to close block");
+    block->range = SourceRange{begin.location, tokenEnd(end)};
+    return block;
+}
+
+ast::ExprPtr Parser::parseLogicalOrExpr() {
+    ast::ExprPtr expression = parseLogicalAndExpr();
+    while (tokens_.peek().kind == TokenKind::PipePipe) {
+        const TokenKind op = tokens_.consume().kind;
+        expression = makeBinaryExpr(op, std::move(expression), parseLogicalAndExpr());
+    }
+    return expression;
+}
+
+ast::ExprPtr Parser::parseLogicalAndExpr() {
+    ast::ExprPtr expression = parseEqualityExpr();
+    while (tokens_.peek().kind == TokenKind::AmpAmp) {
+        const TokenKind op = tokens_.consume().kind;
+        expression = makeBinaryExpr(op, std::move(expression), parseEqualityExpr());
+    }
+    return expression;
+}
+
+std::unique_ptr<ast::Expr> Parser::parseEqualityExpr() {
+    ast::ExprPtr expression = parseRelationalExpr();
+    while (tokens_.peek().kind == TokenKind::EqualEqual ||
+           tokens_.peek().kind == TokenKind::BangEqual) {
+        const TokenKind op = tokens_.consume().kind;
+        expression = makeBinaryExpr(op, std::move(expression), parseRelationalExpr());
+    }
+    return expression;
+}
+
+ast::ExprPtr Parser::parseRelationalExpr() {
+    ast::ExprPtr expression = parseAdditiveExpr();
+    while (tokens_.peek().kind == TokenKind::Less ||
+           tokens_.peek().kind == TokenKind::LessEqual ||
+           tokens_.peek().kind == TokenKind::Greater ||
+           tokens_.peek().kind == TokenKind::GreaterEqual) {
+        const TokenKind op = tokens_.consume().kind;
+        expression = makeBinaryExpr(op, std::move(expression), parseAdditiveExpr());
+    }
+    return expression;
+}
+
+ast::ExprPtr Parser::parseAdditiveExpr() {
+    ast::ExprPtr expression = parseMultiplicativeExpr();
+    while (tokens_.peek().kind == TokenKind::Plus ||
+           tokens_.peek().kind == TokenKind::Minus) {
+        const TokenKind op = tokens_.consume().kind;
+        expression = makeBinaryExpr(op, std::move(expression), parseMultiplicativeExpr());
+    }
+    return expression;
+}
+
+ast::ExprPtr Parser::parseMultiplicativeExpr() {
+    ast::ExprPtr expression = parseUnaryExpr();
+    while (tokens_.peek().kind == TokenKind::Star ||
+           tokens_.peek().kind == TokenKind::Slash ||
+           tokens_.peek().kind == TokenKind::Percent) {
+        const TokenKind op = tokens_.consume().kind;
+        expression = makeBinaryExpr(op, std::move(expression), parseUnaryExpr());
+    }
+    return expression;
+}
+
+ast::ExprPtr Parser::parseUnaryExpr() {
+    if (tokens_.peek().kind == TokenKind::Plus ||
+        tokens_.peek().kind == TokenKind::Minus ||
+        tokens_.peek().kind == TokenKind::Bang) {
+        const Token& op = tokens_.consume();
+        ast::ExprPtr operand = parseUnaryExpr();
+        auto expression = std::make_unique<ast::UnaryExpr>();
+        expression->range = SourceRange{op.location, operand->range.end};
+        expression->op = op.kind;
+        expression->operand = std::move(operand);
+        return expression;
+    }
+    return parsePrimaryExpr();
+}
+
+ast::ExprPtr Parser::parsePrimaryExpr() {
+    if (tokens_.peek().kind == TokenKind::IntegerLiteral) {
+        const Token& token = tokens_.consume();
+        auto expression = std::make_unique<ast::IntLiteralExpr>();
+        expression->range = tokenRange(token);
+        expression->spelling = token.lexeme;
+        return expression;
+    }
+
+    if (tokens_.peek().kind == TokenKind::Identifier) {
+        const Token& token = tokens_.consume();
+        if (tokens_.peek().kind == TokenKind::LParen) {
+            return parseCallExpr(token.lexeme, tokenRange(token));
+        }
+        auto expression = std::make_unique<ast::DeclRefExpr>();
+        expression->range = tokenRange(token);
+        expression->name = token.lexeme;
+        return expression;
+    }
+
+    if (tokens_.peek().kind == TokenKind::LParen) {
+        const Token& begin = tokens_.consume();
+        ast::ExprPtr expression = parseLogicalOrExpr();
+        const Token& end = tokens_.expect(TokenKind::RParen, "expected ')' after expression");
+        expression->range = SourceRange{begin.location, tokenEnd(end)};
+        return expression;
+    }
+
+    (void)tokens_.expect(TokenKind::IntegerLiteral, "expected integer, identifier, or '('");
+    return nullptr;
+}
+
+ast::ExprPtr Parser::parseCallExpr(std::string callee, SourceRange calleeRange) {
+    (void)tokens_.expect(TokenKind::LParen, "expected '(' after function name");
+
+    std::vector<ast::ExprPtr> arguments;
+    if (tokens_.peek().kind != TokenKind::RParen) {
+        arguments.push_back(parseLogicalOrExpr());
+        while (tokens_.match(TokenKind::Comma)) {
+            arguments.push_back(parseLogicalOrExpr());
+        }
+    }
+
+    const Token& end = tokens_.expect(TokenKind::RParen, "expected ')' after arguments");
+    auto expression = std::make_unique<ast::CallExpr>();
+    expression->range = SourceRange{calleeRange.begin, tokenEnd(end)};
+    expression->callee = std::move(callee);
+    expression->arguments = std::move(arguments);
+    return expression;
+}
+
+void Parser::reportError(SourceRange range, std::string message) {
+    diagnostics_.push_back(
+        Diagnostic{DiagnosticSeverity::Error, range, std::move(message)});
+}
+
+void Parser::synchronizeStatement() {
+    while (tokens_.peek().kind != TokenKind::Eof &&
+           tokens_.peek().kind != TokenKind::RBrace) {
+        if (tokens_.consume().kind == TokenKind::Semicolon) {
+            return;
+        }
+    }
+}
+
+void Parser::synchronizeTopLevel() {
+    while (tokens_.peek().kind != TokenKind::Eof) {
+        if (startsTopLevelItem(tokens_.peek().kind)) {
+            return;
+        }
+        if (tokens_.consume().kind == TokenKind::Semicolon) {
+            return;
+        }
+    }
+}
+
+} // namespace toyc::parser
