@@ -162,6 +162,155 @@ void testStackPressureSnapshot() {
     expectAssemblyContains(assembly, "    lw a0, -88(s0)\n", "last vreg slot is returned");
 }
 
+void testBreakContinueCfgSnapshot() {
+    toyc::codegen::contract::IRModule module;
+    module.functions.push_back({
+        "main",
+        toyc::codegen::contract::Type::Int,
+        {},
+        {
+            {
+                "entry",
+                {
+                    toyc::codegen::contract::ConstInst{"%i", 0},
+                    toyc::codegen::contract::ConstInst{"%sum", 0},
+                    toyc::codegen::contract::ConstInst{"%limit", 5},
+                },
+                toyc::codegen::contract::JumpInst{"while_cond_0"},
+            },
+            {
+                "while_cond_0",
+                {
+                    toyc::codegen::contract::LtInst{"%cond", "%i", "%limit"},
+                },
+                toyc::codegen::contract::BranchInst{"%cond", "while_body_0", "while_exit_0"},
+            },
+            {
+                "while_body_0",
+                {
+                    toyc::codegen::contract::ConstInst{"%five", 5},
+                    toyc::codegen::contract::EqInst{"%is_break", "%i", "%five"},
+                },
+                toyc::codegen::contract::BranchInst{"%is_break", "break_0", "after_break_check_0"},
+            },
+            {
+                "after_break_check_0",
+                {
+                    toyc::codegen::contract::ConstInst{"%three", 3},
+                    toyc::codegen::contract::EqInst{"%is_continue", "%i", "%three"},
+                },
+                toyc::codegen::contract::BranchInst{"%is_continue", "continue_0", "loop_step_0"},
+            },
+            {
+                "continue_0",
+                {
+                    toyc::codegen::contract::ConstInst{"%one", 1},
+                    toyc::codegen::contract::AddInst{"%i", "%i", "%one"},
+                },
+                toyc::codegen::contract::JumpInst{"while_cond_0"},
+            },
+            {
+                "loop_step_0",
+                {
+                    toyc::codegen::contract::AddInst{"%sum", "%sum", "%i"},
+                    toyc::codegen::contract::ConstInst{"%one_step", 1},
+                    toyc::codegen::contract::AddInst{"%i", "%i", "%one_step"},
+                },
+                toyc::codegen::contract::JumpInst{"while_cond_0"},
+            },
+            {
+                "break_0",
+                {},
+                toyc::codegen::contract::JumpInst{"while_exit_0"},
+            },
+            {
+                "while_exit_0",
+                {},
+                toyc::codegen::contract::ReturnInst{"%sum"},
+            },
+        },
+    });
+
+    const std::string assembly = toyc::codegen::RiscvBackend().generate(module);
+    expectAssemblyContains(assembly, "main__break_0:\n", "break target label");
+    expectAssemblyContains(assembly, "main__continue_0:\n", "continue target label");
+    expectAssemblyContains(assembly, "    j main__while_exit_0\n", "break jumps to loop exit");
+    expectAssemblyContains(assembly, "    j main__while_cond_0\n", "continue jumps to loop head");
+}
+
+void testOptRemovesFallThroughJumpSnapshot() {
+    toyc::codegen::contract::IRModule module;
+    module.functions.push_back({
+        "main",
+        toyc::codegen::contract::Type::Int,
+        {},
+        {
+            {
+                "entry",
+                {
+                    toyc::codegen::contract::ConstInst{"%x", 1},
+                },
+                toyc::codegen::contract::JumpInst{"next"},
+            },
+            {
+                "next",
+                {},
+                toyc::codegen::contract::ReturnInst{"%x"},
+            },
+        },
+    });
+
+    toyc::codegen::BackendOptions options;
+    options.enableOpt = true;
+    const std::string assembly = toyc::codegen::RiscvBackend().generate(module, options);
+    expectAssemblyContains(assembly, "main__next:\n", "fall-through target block is emitted");
+    if (assembly.find("    j main__next\n") != std::string::npos) {
+        fail("fall-through jump should be removed when -opt is enabled");
+    }
+}
+
+void testOptCompareBranchFusionSnapshot() {
+    toyc::codegen::contract::IRModule module;
+    module.functions.push_back({
+        "main",
+        toyc::codegen::contract::Type::Int,
+        {},
+        {
+            {
+                "entry",
+                {
+                    toyc::codegen::contract::ConstInst{"%a", 1},
+                    toyc::codegen::contract::ConstInst{"%b", 2},
+                    toyc::codegen::contract::LtInst{"%cond", "%a", "%b"},
+                },
+                toyc::codegen::contract::BranchInst{"%cond", "then_0", "else_0"},
+            },
+            {
+                "then_0",
+                {
+                    toyc::codegen::contract::ConstInst{"%ret", 11},
+                },
+                toyc::codegen::contract::ReturnInst{"%ret"},
+            },
+            {
+                "else_0",
+                {
+                    toyc::codegen::contract::ConstInst{"%ret", 22},
+                },
+                toyc::codegen::contract::ReturnInst{"%ret"},
+            },
+        },
+    });
+
+    toyc::codegen::BackendOptions options;
+    options.enableOpt = true;
+    const std::string assembly = toyc::codegen::RiscvBackend().generate(module, options);
+    expectAssemblyContains(assembly,
+                            "    slt t0, t0, t1\n    bnez t0, main__then_0\n",
+                            "fused compare-branch");
+    expectAssemblyContains(assembly, "    j main__else_0\n", "fused branch to else");
+}
+
 void testMultiFunctionModuleSnapshot() {
     toyc::codegen::contract::IRModule module;
     module.globalVars.push_back({"@g", 5});
@@ -205,6 +354,9 @@ int main() {
         testNestedCallSnapshot();
         testShadowScopeDistinctVRegsSnapshot();
         testStackPressureSnapshot();
+        testBreakContinueCfgSnapshot();
+        testOptRemovesFallThroughJumpSnapshot();
+        testOptCompareBranchFusionSnapshot();
         testMultiFunctionModuleSnapshot();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';

@@ -1,4 +1,4 @@
-#include "codegen/VRegCollector.h"
+#include "codegen/frame/VRegCollector.h"
 
 #include <cstdlib>
 #include <exception>

@@ -28,12 +28,14 @@ toyc_apply_warnings(toyc_frontend)
 
 add_library(toyc_codegen
     src/codegen/RiscvBackend.cpp
-    src/codegen/RiscvEmitter.cpp
-    src/codegen/StackFrame.cpp
-    src/codegen/CallingConvention.cpp
-    src/codegen/InstructionSelector.cpp
-    src/codegen/VRegCollector.cpp
-    src/codegen/FunctionEmitter.cpp
+    src/codegen/emit/RiscvEmitter.cpp
+    src/codegen/frame/StackFrame.cpp
+    src/codegen/abi/CallingConvention.cpp
+    src/codegen/lower/InstructionSelector.cpp
+    src/codegen/frame/VRegCollector.cpp
+    src/codegen/lower/FunctionEmitter.cpp
+    src/codegen/frame/RegisterAllocator.cpp
+    src/codegen/opt/PeepholeOptimizer.cpp
 )
 
 target_include_directories(toyc_codegen
@@ -245,10 +247,19 @@ toyc_apply_warnings(codegen_vreg_collector_tests)
 add_test(NAME codegen_vreg_collector_tests COMMAND codegen_vreg_collector_tests)
 
 add_executable(codegen_snapshot_tests
-    tests/integration/codegen_snapshot_tests.cpp
+    tests/integration/codegen/snapshot_tests.cpp
 )
 
 target_link_libraries(codegen_snapshot_tests PRIVATE toyc_codegen)
 toyc_apply_warnings(codegen_snapshot_tests)
 
 add_test(NAME codegen_snapshot_tests COMMAND codegen_snapshot_tests)
+
+add_executable(codegen_peephole_tests
+    tests/unit/codegen_peephole_tests.cpp
+)
+
+target_link_libraries(codegen_peephole_tests PRIVATE toyc_codegen)
+toyc_apply_warnings(codegen_peephole_tests)
+
+add_test(NAME codegen_peephole_tests COMMAND codegen_peephole_tests)

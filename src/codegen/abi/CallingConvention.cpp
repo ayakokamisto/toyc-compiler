@@ -1,7 +1,7 @@
-#include "codegen/CallingConvention.h"
+#include "codegen/abi/CallingConvention.h"
 
-#include "codegen/CodegenUtils.h"
-#include "codegen/RiscvEmitter.h"
+#include "codegen/emit/CodegenUtils.h"
+#include "codegen/emit/RiscvEmitter.h"
 
 namespace toyc::codegen {
 

@@ -1,7 +1,7 @@
 #pragma once
 
+#include "codegen/BackendOptions.h"
 #include "codegen/ContractIR.h"
-#include "codegen/RiscvBackend.h"
 
 namespace toyc::codegen {
 

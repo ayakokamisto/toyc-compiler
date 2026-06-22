@@ -1,7 +1,7 @@
 #pragma once
 
 #include "codegen/ContractIR.h"
-#include "codegen/StackFrame.h"
+#include "codegen/frame/StackFrame.h"
 
 namespace toyc::codegen {
 

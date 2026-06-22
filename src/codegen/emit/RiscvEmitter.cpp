@@ -1,4 +1,4 @@
-#include "codegen/RiscvEmitter.h"
+#include "codegen/emit/RiscvEmitter.h"
 
 namespace toyc::codegen {
 

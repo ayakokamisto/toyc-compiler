@@ -1,8 +1,11 @@
 #include "codegen/RiscvBackend.h"
 
-#include "codegen/CodegenUtils.h"
-#include "codegen/FunctionEmitter.h"
-#include "codegen/RiscvEmitter.h"
+#include "codegen/emit/CodegenUtils.h"
+#include "codegen/emit/RiscvEmitter.h"
+#include "codegen/lower/FunctionEmitter.h"
+#include "codegen/opt/PeepholeOptimizer.h"
+
+#include <utility>
 
 namespace toyc::codegen {
 
@@ -27,8 +30,11 @@ std::string RiscvBackend::generate(const contract::IRModule& module,
         }
     }
 
-    (void)options.enableOpt;
-    return emitter.str();
+    std::string assembly = emitter.str();
+    if (options.enableOpt) {
+        assembly = PeepholeOptimizer::optimize(std::move(assembly));
+    }
+    return assembly;
 }
 
 } // namespace toyc::codegen

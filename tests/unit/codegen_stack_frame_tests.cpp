@@ -1,5 +1,5 @@
-#include "codegen/RiscvEmitter.h"
-#include "codegen/StackFrame.h"
+#include "codegen/emit/RiscvEmitter.h"
+#include "codegen/frame/StackFrame.h"
 
 #include <cstdlib>
 #include <exception>

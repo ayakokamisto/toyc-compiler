@@ -1,4 +1,4 @@
-#include "codegen/StackFrame.h"
+#include "codegen/frame/StackFrame.h"
 
 #include <stdexcept>
 
