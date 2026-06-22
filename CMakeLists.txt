@@ -16,6 +16,7 @@ endfunction()
 
 add_library(toyc_frontend
     src/lexer/lexer.cpp
+    src/parser/parser.cpp
 )
 
 target_include_directories(toyc_frontend
@@ -68,6 +69,144 @@ target_link_libraries(token_stream_tests PRIVATE toyc_frontend)
 toyc_apply_warnings(token_stream_tests)
 
 add_test(NAME token_stream_tests COMMAND token_stream_tests)
+
+add_executable(parser_p1_tests
+    tests/frontend/parser_p1_tests.cpp
+)
+
+target_link_libraries(parser_p1_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p1_tests)
+
+add_test(NAME parser_p1_tests COMMAND parser_p1_tests)
+
+add_executable(parser_p2_tests
+    tests/frontend/parser_p2_tests.cpp
+)
+
+target_link_libraries(parser_p2_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p2_tests)
+
+add_test(NAME parser_p2_tests COMMAND parser_p2_tests)
+
+add_executable(parser_p3_tests
+    tests/frontend/parser_p3_tests.cpp
+)
+
+target_link_libraries(parser_p3_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p3_tests)
+
+add_test(NAME parser_p3_tests COMMAND parser_p3_tests)
+
+add_executable(parser_p4_tests
+    tests/frontend/parser_p4_tests.cpp
+)
+
+target_link_libraries(parser_p4_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p4_tests)
+
+add_test(NAME parser_p4_tests COMMAND parser_p4_tests)
+
+add_executable(parser_p5_tests
+    tests/frontend/parser_p5_tests.cpp
+)
+
+target_link_libraries(parser_p5_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p5_tests)
+
+add_test(NAME parser_p5_tests COMMAND parser_p5_tests)
+
+add_test(
+    NAME valid_parser_driver
+    COMMAND ${CMAKE_COMMAND}
+        -DTOYCC=$<TARGET_FILE:toycc>
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/valid_parser.tc
+        -DEXPECTED_EXIT=0
+        -DEXPECT_PARSER_ERROR=OFF
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
+)
+
+add_test(
+    NAME syntax_error_driver
+    COMMAND ${CMAKE_COMMAND}
+        -DTOYCC=$<TARGET_FILE:toycc>
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/syntax_error.tc
+        -DEXPECTED_EXIT=1
+        -DEXPECT_PARSER_ERROR=ON
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
+)
+
+# This program is syntactically valid. Sema will reject it after Sema is integrated.
+add_test(
+    NAME parser_accepts_semantic_errors
+    COMMAND ${CMAKE_COMMAND}
+        -DTOYCC=$<TARGET_FILE:toycc>
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/semantic_errors.tc
+        -DEXPECTED_EXIT=0
+        -DEXPECT_PARSER_ERROR=OFF
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
+)
+
+add_test(
+    NAME opt_syntax_error_driver
+    COMMAND ${CMAKE_COMMAND}
+        -DTOYCC=$<TARGET_FILE:toycc>
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/syntax_error.tc
+        -DEXPECTED_EXIT=1
+        -DEXPECT_PARSER_ERROR=ON
+        -DTOYCC_ARGS=-opt
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
+)
+
+add_test(
+    NAME dump_tokens_driver
+    COMMAND ${CMAKE_COMMAND}
+        -DTOYCC=$<TARGET_FILE:toycc>
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/valid_parser.tc
+        -DEXPECTED_EXIT=0
+        -DEXPECT_PARSER_ERROR=OFF
+        -DTOYCC_ARGS=--dump-tokens
+        -DEXPECTED_STDERR_PATTERN=EOF
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
+)
+
+add_test(
+    NAME unknown_option_driver
+    COMMAND ${CMAKE_COMMAND}
+        -DTOYCC=$<TARGET_FILE:toycc>
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/valid_parser.tc
+        -DEXPECTED_EXIT=2
+        -DEXPECT_PARSER_ERROR=OFF
+        -DTOYCC_ARGS=--bad-option
+        -DEXPECTED_STDERR_PATTERN=unknown.option
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
+)
+
+set(TOYC_INTEGRATION_CASES
+    basic_return
+    global_const
+    global_var
+    function_call
+    recursion
+    nested_scope_shadowing
+    arithmetic_precedence
+    if_else
+    while_break_continue
+    short_circuit_and
+    short_circuit_or
+    void_function
+)
+
+foreach(case_name IN LISTS TOYC_INTEGRATION_CASES)
+    add_test(
+        NAME parser_case_${case_name}
+        COMMAND ${CMAKE_COMMAND}
+            -DTOYCC=$<TARGET_FILE:toycc>
+            -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/cases/${case_name}.tc
+            -DEXPECTED_EXIT=0
+            -DEXPECT_PARSER_ERROR=OFF
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
+    )
+endforeach()
 
 add_executable(codegen_stack_frame_tests
     tests/unit/codegen_stack_frame_tests.cpp

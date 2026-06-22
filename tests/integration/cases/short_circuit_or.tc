@@ -1,0 +1,6 @@
+int main() {
+    int zero = 0;
+    if (1 || 10 / zero > 1)
+        return 3;
+    return 4;
+}

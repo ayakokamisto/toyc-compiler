@@ -1,8 +1,12 @@
+#include "common/token_stream.h"
 #include "lexer/lexer.h"
+#include "parser/parser.h"
 
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -34,6 +38,23 @@ void dumpTokens(const std::vector<toyc::Token>& tokens) {
     }
 }
 
+void printDiagnostic(const toyc::Diagnostic& diagnostic) {
+    const char* severity = diagnostic.severity == toyc::DiagnosticSeverity::Error
+                               ? "error"
+                               : "warning";
+    std::string_view message = diagnostic.message;
+    const std::size_t firstColon = message.find(':');
+    const std::size_t secondColon =
+        firstColon == std::string_view::npos ? std::string_view::npos
+                                             : message.find(':', firstColon + 1);
+    if (secondColon != std::string_view::npos && secondColon + 1 < message.size() &&
+        message[secondColon + 1] == ' ') {
+        message.remove_prefix(secondColon + 2);
+    }
+    std::cerr << diagnostic.range.begin.line << ':' << diagnostic.range.begin.column << ": "
+              << severity << ": " << message << '\n';
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -52,9 +73,19 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        toyc::TokenStream tokenStream(tokens);
+        toyc::parser::Parser parser(tokenStream);
+        const std::unique_ptr<toyc::ast::CompUnit> unit = parser.parseCompUnit();
+        for (const toyc::Diagnostic& diagnostic : parser.diagnostics()) {
+            printDiagnostic(diagnostic);
+        }
+        if (parser.hasError()) {
+            return 1;
+        }
+
+        (void)unit;
         (void)options;
-        std::cerr << "compilation stopped: parser, semantic analysis, and code generation are incomplete\n";
-        return 1;
+        return 0;
     } catch (const toyc::LexError& error) {
         std::cerr << error.what() << '\n';
         return 1;

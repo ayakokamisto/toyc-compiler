@@ -1,0 +1,13 @@
+int main() {
+    int index = 0;
+    int sum = 0;
+    while (index < 10) {
+        index = index + 1;
+        if (index % 2 == 0)
+            continue;
+        if (index > 7)
+            break;
+        sum = sum + index;
+    }
+    return sum;
+}

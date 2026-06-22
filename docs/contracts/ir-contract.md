@@ -58,6 +58,12 @@ compile-time integer.
 CodeGen consumes an IR `Module` accepted by `verifyModule()`. IR generation and CodeGen
 leave the AST unchanged.
 
+The AST input must have completed Parser without Error-level diagnostics and must have
+completed Sema successfully. The `ast::CompUnit` and its matching `SemanticModel` both
+remain alive for the complete IRGenerator call. Driver follows
+`Parser -> Sema -> IRGenerator -> verifyModule -> CodeGen` and never bypasses Sema when
+constructing IR from source input.
+
 The `-opt` implementation order is constant folding, dead-code elimination, basic-block
 simplification, local common-subexpression elimination, and simple register-allocation
 improvements.
