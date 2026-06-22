@@ -22,8 +22,12 @@ bool startsTopLevelItem(TokenKind kind) {
            kind == TokenKind::KwVoid;
 }
 
-bool startsExpr(TokenKind kind) {
-    return kind == TokenKind::IntegerLiteral || kind == TokenKind::Identifier ||
+bool startsStatement(TokenKind kind) {
+    return kind == TokenKind::LBrace || kind == TokenKind::KwConst ||
+           kind == TokenKind::KwInt || kind == TokenKind::KwIf ||
+           kind == TokenKind::KwWhile || kind == TokenKind::KwBreak ||
+           kind == TokenKind::KwContinue || kind == TokenKind::KwReturn ||
+           kind == TokenKind::Identifier || kind == TokenKind::IntegerLiteral ||
            kind == TokenKind::LParen || kind == TokenKind::Plus ||
            kind == TokenKind::Minus || kind == TokenKind::Bang;
 }
@@ -186,6 +190,35 @@ ast::StmtPtr Parser::parseStmt() {
         return parseBlockStmt();
     }
 
+    if (tokens_.peek().kind == TokenKind::KwConst ||
+        tokens_.peek().kind == TokenKind::KwInt) {
+        ast::DeclPtr declaration = parseDecl();
+        auto statement = std::make_unique<ast::DeclStmt>();
+        statement->range = declaration->range;
+        statement->declaration = std::move(declaration);
+        return statement;
+    }
+
+    if (tokens_.peek().kind == TokenKind::KwIf) {
+        return parseIfStmt();
+    }
+
+    if (tokens_.peek().kind == TokenKind::KwWhile) {
+        return parseWhileStmt();
+    }
+
+    if (tokens_.peek().kind == TokenKind::KwBreak) {
+        return parseBreakStmt();
+    }
+
+    if (tokens_.peek().kind == TokenKind::KwContinue) {
+        return parseContinueStmt();
+    }
+
+    if (tokens_.peek().kind == TokenKind::KwReturn) {
+        return parseReturnStmt();
+    }
+
     if (tokens_.peek().kind == TokenKind::Semicolon) {
         const Token& semicolon = tokens_.consume();
         auto statement = std::make_unique<ast::EmptyStmt>();
@@ -193,19 +226,19 @@ ast::StmtPtr Parser::parseStmt() {
         return statement;
     }
 
-    if (startsExpr(tokens_.peek().kind)) {
-        ast::ExprPtr expression = parseLogicalOrExpr();
-        const SourceLocation begin = expression->range.begin;
-        const Token& semicolon =
-            tokens_.expect(TokenKind::Semicolon, "expected ';' after expression statement");
-        auto statement = std::make_unique<ast::ExprStmt>();
-        statement->range = SourceRange{begin, tokenEnd(semicolon)};
-        statement->expression = std::move(expression);
-        return statement;
+    if (tokens_.peek().kind == TokenKind::Identifier &&
+        tokens_.peek(1).kind == TokenKind::Equal) {
+        return parseAssignStmt();
     }
 
-    (void)tokens_.expect(TokenKind::Semicolon, "expected statement");
-    return nullptr;
+    ast::ExprPtr expression = parseLogicalOrExpr();
+    const SourceLocation begin = expression->range.begin;
+    const Token& semicolon =
+        tokens_.expect(TokenKind::Semicolon, "expected ';' after expression statement");
+    auto statement = std::make_unique<ast::ExprStmt>();
+    statement->range = SourceRange{begin, tokenEnd(semicolon)};
+    statement->expression = std::move(expression);
+    return statement;
 }
 
 std::unique_ptr<ast::BlockStmt> Parser::parseBlockStmt() {
@@ -229,6 +262,84 @@ std::unique_ptr<ast::BlockStmt> Parser::parseBlockStmt() {
     const Token& end = tokens_.expect(TokenKind::RBrace, "expected '}' to close block");
     block->range = SourceRange{begin.location, tokenEnd(end)};
     return block;
+}
+
+std::unique_ptr<ast::AssignStmt> Parser::parseAssignStmt() {
+    const Token& target = tokens_.expect(TokenKind::Identifier, "expected assignment target");
+    (void)tokens_.expect(TokenKind::Equal, "expected '=' after assignment target");
+    ast::ExprPtr value = parseLogicalOrExpr();
+    const Token& end = tokens_.expect(TokenKind::Semicolon, "expected ';' after assignment");
+
+    auto statement = std::make_unique<ast::AssignStmt>();
+    statement->range = SourceRange{target.location, tokenEnd(end)};
+    statement->target = target.lexeme;
+    statement->targetRange = tokenRange(target);
+    statement->value = std::move(value);
+    return statement;
+}
+
+std::unique_ptr<ast::ReturnStmt> Parser::parseReturnStmt() {
+    const Token& begin = tokens_.expect(TokenKind::KwReturn, "expected 'return'");
+    ast::ExprPtr value;
+    if (tokens_.peek().kind != TokenKind::Semicolon) {
+        value = parseLogicalOrExpr();
+    }
+    const Token& end = tokens_.expect(TokenKind::Semicolon, "expected ';' after return");
+
+    auto statement = std::make_unique<ast::ReturnStmt>();
+    statement->range = SourceRange{begin.location, tokenEnd(end)};
+    statement->value = std::move(value);
+    return statement;
+}
+
+std::unique_ptr<ast::IfStmt> Parser::parseIfStmt() {
+    const Token& begin = tokens_.expect(TokenKind::KwIf, "expected 'if'");
+    (void)tokens_.expect(TokenKind::LParen, "expected '(' after 'if'");
+    ast::ExprPtr condition = parseLogicalOrExpr();
+    (void)tokens_.expect(TokenKind::RParen, "expected ')' after if condition");
+    ast::StmtPtr thenBranch = parseStmt();
+    ast::StmtPtr elseBranch;
+    if (tokens_.match(TokenKind::KwElse)) {
+        elseBranch = parseStmt();
+    }
+
+    auto statement = std::make_unique<ast::IfStmt>();
+    statement->range = SourceRange{
+        begin.location, elseBranch != nullptr ? elseBranch->range.end : thenBranch->range.end};
+    statement->condition = std::move(condition);
+    statement->thenBranch = std::move(thenBranch);
+    statement->elseBranch = std::move(elseBranch);
+    return statement;
+}
+
+std::unique_ptr<ast::WhileStmt> Parser::parseWhileStmt() {
+    const Token& begin = tokens_.expect(TokenKind::KwWhile, "expected 'while'");
+    (void)tokens_.expect(TokenKind::LParen, "expected '(' after 'while'");
+    ast::ExprPtr condition = parseLogicalOrExpr();
+    (void)tokens_.expect(TokenKind::RParen, "expected ')' after while condition");
+    ast::StmtPtr body = parseStmt();
+
+    auto statement = std::make_unique<ast::WhileStmt>();
+    statement->range = SourceRange{begin.location, body->range.end};
+    statement->condition = std::move(condition);
+    statement->body = std::move(body);
+    return statement;
+}
+
+std::unique_ptr<ast::BreakStmt> Parser::parseBreakStmt() {
+    const Token& begin = tokens_.expect(TokenKind::KwBreak, "expected 'break'");
+    const Token& end = tokens_.expect(TokenKind::Semicolon, "expected ';' after break");
+    auto statement = std::make_unique<ast::BreakStmt>();
+    statement->range = SourceRange{begin.location, tokenEnd(end)};
+    return statement;
+}
+
+std::unique_ptr<ast::ContinueStmt> Parser::parseContinueStmt() {
+    const Token& begin = tokens_.expect(TokenKind::KwContinue, "expected 'continue'");
+    const Token& end = tokens_.expect(TokenKind::Semicolon, "expected ';' after continue");
+    auto statement = std::make_unique<ast::ContinueStmt>();
+    statement->range = SourceRange{begin.location, tokenEnd(end)};
+    return statement;
 }
 
 ast::ExprPtr Parser::parseLogicalOrExpr() {
@@ -366,6 +477,9 @@ void Parser::reportError(SourceRange range, std::string message) {
 void Parser::synchronizeStatement() {
     while (tokens_.peek().kind != TokenKind::Eof &&
            tokens_.peek().kind != TokenKind::RBrace) {
+        if (startsStatement(tokens_.peek().kind)) {
+            return;
+        }
         if (tokens_.consume().kind == TokenKind::Semicolon) {
             return;
         }

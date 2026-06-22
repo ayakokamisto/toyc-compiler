@@ -70,3 +70,30 @@ target_link_libraries(parser_p2_tests PRIVATE toyc_frontend)
 toyc_apply_warnings(parser_p2_tests)
 
 add_test(NAME parser_p2_tests COMMAND parser_p2_tests)
+
+add_executable(parser_p3_tests
+    tests/frontend/parser_p3_tests.cpp
+)
+
+target_link_libraries(parser_p3_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p3_tests)
+
+add_test(NAME parser_p3_tests COMMAND parser_p3_tests)
+
+add_executable(parser_p4_tests
+    tests/frontend/parser_p4_tests.cpp
+)
+
+target_link_libraries(parser_p4_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p4_tests)
+
+add_test(NAME parser_p4_tests COMMAND parser_p4_tests)
+
+add_executable(parser_p5_tests
+    tests/frontend/parser_p5_tests.cpp
+)
+
+target_link_libraries(parser_p5_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(parser_p5_tests)
+
+add_test(NAME parser_p5_tests COMMAND parser_p5_tests)

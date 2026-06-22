@@ -31,9 +31,12 @@ private:
 
     ast::StmtPtr parseStmt();
     std::unique_ptr<ast::BlockStmt> parseBlockStmt();
+    std::unique_ptr<ast::AssignStmt> parseAssignStmt();
     std::unique_ptr<ast::ReturnStmt> parseReturnStmt();
     std::unique_ptr<ast::IfStmt> parseIfStmt();
     std::unique_ptr<ast::WhileStmt> parseWhileStmt();
+    std::unique_ptr<ast::BreakStmt> parseBreakStmt();
+    std::unique_ptr<ast::ContinueStmt> parseContinueStmt();
 
     ast::ExprPtr parseLogicalOrExpr();
     ast::ExprPtr parseLogicalAndExpr();
