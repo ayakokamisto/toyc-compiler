@@ -55,7 +55,8 @@ tests/
 ├── unit/            各模块单元测试
 └── integration/     端到端集成测试
 docs/
-└── contracts/       接口契约文档
+├── contracts/       接口契约文档
+└── report/          实践报告
 ```
 
 ## 接口契约 / Public Contracts
