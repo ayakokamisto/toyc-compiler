@@ -34,6 +34,47 @@ use loops to build left-associative trees. `parseUnaryExpr()` recursively handle
 `+`, `-`, and `!`. `parsePrimaryExpr()` distinguishes a declaration reference from a call
 by checking for `(` after an identifier.
 
+Every binary operator is left-associative. `&&` has higher precedence than `||` because
+`parseLogicalOrExpr()` parses each operand through `parseLogicalAndExpr()`.
+
+The lexer keeps `-` separate from integer tokens. The expression `-2` therefore has the
+fixed AST form:
+
+```text
+UnaryExpr(Minus, IntLiteralExpr("2"))
+```
+
+ToyC expression parsing follows C operator precedence. From highest to lowest, the
+frozen precedence layers are:
+
+```text
+Primary
+Unary: + - !
+Multiplicative: * / %
+Additive: + -
+Relational: < <= > >=
+Equality: == !=
+LogicalAnd: &&
+LogicalOr: ||
+```
+
+The recursive-descent call chain is:
+
+```text
+parseLogicalOrExpr()
+  -> parseLogicalAndExpr()
+  -> parseEqualityExpr()
+  -> parseRelationalExpr()
+  -> parseAdditiveExpr()
+  -> parseMultiplicativeExpr()
+  -> parseUnaryExpr()
+  -> parsePrimaryExpr()
+```
+
+`parseEqualityExpr()` returns `std::unique_ptr<ast::Expr>`. It owns `==` and `!=`.
+`parseRelationalExpr()` owns `<`, `<=`, `>`, and `>=`. This precedence split governs the
+implementation when the compact grammar groups all six operators under `RelExpr`.
+
 Logical `&&` and `||` remain `BinaryExpr` syntax nodes. IR generation supplies their
 short-circuit control flow.
 

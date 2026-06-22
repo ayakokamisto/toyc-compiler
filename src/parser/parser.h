@@ -37,6 +37,7 @@ private:
 
     ast::ExprPtr parseLogicalOrExpr();
     ast::ExprPtr parseLogicalAndExpr();
+    std::unique_ptr<ast::Expr> parseEqualityExpr();
     ast::ExprPtr parseRelationalExpr();
     ast::ExprPtr parseAdditiveExpr();
     ast::ExprPtr parseMultiplicativeExpr();
