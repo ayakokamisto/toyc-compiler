@@ -6,9 +6,14 @@ ToyC is a simplified subset of C. This project is a ToyC compiler targeting RISC
 
 ## 项目状态 / Project Status
 
-当前已完成 Lexer、TokenStream 实现，以及 AST、Parser、IR 的公共接口冻结。Parser、Sema、IR 生成和 CodeGen 正在分阶段开发中。
+当前已完成 Lexer、TokenStream，以及 ToyC 全部语法产生式的 Parser。Parser 输出为
+`ast::CompUnit`。Sema、IR 生成和 CodeGen 正在分阶段开发中。
 
-Lexer, TokenStream are implemented. AST, Parser, and IR public interfaces are frozen. Parser, Sema, IR generation, and CodeGen are under staged development.
+Lexer, TokenStream, and the complete ToyC Parser are implemented. Parser produces an
+`ast::CompUnit`. Sema, IR generation, and CodeGen are under staged development.
+
+Parser 出现 Error 级语法诊断时，Driver 应输出诊断并停止进入 Sema、IR 和 CodeGen。
+语义分析输入边界见 `docs/contracts/sema-input-contract.md`。
 
 ## 构建与测试 / Build and Test
 
@@ -66,6 +71,7 @@ docs/
 | [frontend-contract.md](docs/contracts/frontend-contract.md) | Token 定义、Lexer 行为、TokenStream 接口 |
 | [ast-contract.md](docs/contracts/ast-contract.md) | AST 节点层次、所有权模型、语法-语义边界 |
 | [parser-contract.md](docs/contracts/parser-contract.md) | Parser 入口、文法决策、诊断与恢复策略 |
+| [sema-input-contract.md](docs/contracts/sema-input-contract.md) | Parser AST 到 Sema 的输入边界与职责 |
 | [ir-contract.md](docs/contracts/ir-contract.md) | IR 指令集、CFG 降低规则、验证器约束 |
 
 接口变更需与对应头文件和契约文档同步提交。
