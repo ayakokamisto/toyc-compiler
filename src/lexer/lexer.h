@@ -40,8 +40,8 @@ private:
 
     std::string source_;
     std::size_t current_ = 0;
-    int line_ = 1;
-    int column_ = 1;
+    std::size_t line_ = 1;
+    std::size_t column_ = 1;
     std::vector<Token> tokens_;
 };
 

@@ -1,14 +1,11 @@
 #pragma once
 
+#include "common/diagnostic.h"
+
 #include <string>
 #include <string_view>
 
 namespace toyc {
-
-struct SourceLocation {
-    int line = 1;
-    int column = 1;
-};
 
 enum class TokenKind {
     Eof,

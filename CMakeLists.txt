@@ -42,3 +42,12 @@ target_link_libraries(lexer_tests PRIVATE toyc_frontend)
 toyc_apply_warnings(lexer_tests)
 
 add_test(NAME lexer_tests COMMAND lexer_tests)
+
+add_executable(token_stream_tests
+    tests/frontend/token_stream_tests.cpp
+)
+
+target_link_libraries(token_stream_tests PRIVATE toyc_frontend)
+toyc_apply_warnings(token_stream_tests)
+
+add_test(NAME token_stream_tests COMMAND token_stream_tests)

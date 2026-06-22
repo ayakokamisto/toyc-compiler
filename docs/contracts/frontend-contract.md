@@ -39,15 +39,46 @@ The lexer accepts source text as `std::string_view` through `Lexer` or the `lex(
 
 ## Negative Number Policy
 
-The lexer emits `-` as `TokenKind::Minus` and emits following digits as an unsigned decimal `IntegerLiteral`. Examples: `-42` tokenizes as `Minus`, `IntegerLiteral("42")`; `a+-1` tokenizes as `Identifier("a")`, `Plus`, `Minus`, `IntegerLiteral("1")`.
+The project uses negative-number policy A. The lexer always emits `-` as
+`TokenKind::Minus`. An `IntegerLiteral` lexeme contains decimal digits only and never
+contains a sign.
 
-Negative values belong to future unary expression parsing. The lexer never folds a sign into an integer literal.
+- `-2` becomes `Minus`, `IntegerLiteral("2")`.
+- `a + -2` becomes `Identifier("a")`, `Plus`, `Minus`, `IntegerLiteral("2")`.
+- `a--2` becomes `Identifier("a")`, `Minus`, `Minus`, `IntegerLiteral("2")`.
+
+The parser's unary-expression layer interprets unary plus, unary minus, and logical not.
+
+## Decimal Integer Range
+
+The lexer recognizes valid decimal digit strings, rejects invalid leading zeroes, and
+preserves the original lexeme. Sema performs signed 32-bit range checks during constant
+evaluation.
+
+- Ordinary positive integer constants range from `0` through `2147483647`.
+- `-2147483648` is represented as
+  `UnaryExpr(Minus, IntLiteralExpr("2147483648"))` and is valid.
+- `2147483648` as a positive expression is a semantic error.
+- `-2147483649` is a semantic error.
+
+The lexer may emit `IntegerLiteral("2147483648")`; Sema determines validity from the AST
+context.
+
+## Frontend Responsibility Boundary
+
+- The lexer produces a complete token sequence ending in `Eof`.
+- Token locations use 1-based starting line and column numbers.
+- `TokenStream` provides read-only lookahead, consumption, matching, and expected-token
+  checks.
+- The parser builds a syntax-only AST.
+- Sema owns name binding, types, constant values, scopes, and control-flow legality in
+  semantic side tables.
+- IR generation reads the AST and semantic model and never mutates the AST.
+- Code generation consumes an IR `Module` accepted by the IR verifier.
 
 ## Expression Parser Boundary
 
-Member 1 owns the expression parser entry point:
-
-- `parseExpr()` will parse ToyC expressions after the shared AST interface is frozen.
-- Member 1 owns expression AST implementation after that interface is agreed.
-
-Member 2 calls `parseExpr()` from declaration initializers, assignments, conditions, return statements, and function argument parsing. Member 2 owns declaration, statement, function, global pre-collection, and constant-evaluation integration around that expression boundary.
+Member 1 owns the complete AST and parser. `parseExpr()` is the shared expression entry
+used by declaration initializers, assignments, conditions, return statements, and call
+arguments. Member 2 consumes the completed `ast::CompUnit` in Sema. The full ownership
+boundary is frozen in `docs/team-plan.md`.
