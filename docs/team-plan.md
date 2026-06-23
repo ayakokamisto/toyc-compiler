@@ -129,3 +129,10 @@ docs(contract): freeze semantic model interface
 - 功能评测时间限制为1秒，性能评测时间限制为20秒。
 - 性能基准采用 gcc `-O2`，程序结果以 `main` 返回值为准。
 - 项目实现使用自有后端基础设施。
+
+# Current Driver Integration Status
+
+- Driver full-chain wiring is complete in `src/driver/main.cpp`.
+- The default path is `stdin -> Lexer -> Parser -> Sema -> Contract IR -> IR Verify -> RISC-V32 CodeGen -> stdout`.
+- M5 is now in the RISC-V toolchain stage: assemble, link, execute, and compare process exit codes.
+- The current local Windows environment needs RISC-V GCC and QEMU to run generated assembly end to end.

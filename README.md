@@ -15,25 +15,26 @@ ToyC is a simplified subset of C. This project is a ToyC compiler targeting RISC
 - **Sema**: 语义分析已实现，覆盖符号表、嵌套作用域、常量求值、函数签名、返回检查、`break`/`continue` 合法性
 - **IR**: 成员三交付的 `ContractIRGenerator` 已实现，可将 AST + `SemanticModel` 降低为后端契约 IR，并提供结构验证器
 - **CodeGen**: RISC-V32 后端已实现，覆盖栈帧、调用约定、指令选择、汇编发射、寄存器分配和后端优化路径
-- **Driver**: 编译器入口已集成 Lexer、Parser 和 Parser Diagnostic，支持 `-opt` 和 `--dump-tokens` 参数
+- **Driver**: 编译器入口已全链路接线（Lexer → Parser → Sema → Contract IR → IR Verify → RISC-V32 CodeGen），支持 `-opt` 和 `--dump-tokens` 参数
 
-Lexer, Parser, Sema, contract IR generation, IR verification, and the RISC-V32 backend are implemented as module-level components. Parser produces an `ast::CompUnit`; Sema produces a `sema::SemanticModel`; member three's IR generator produces `codegen::contract::IRModule` for the backend.
+Lexer, Parser, Sema, contract IR generation, IR verification, and the RISC-V32 backend are wired through the default `toycc` compilation path. Parser produces an `ast::CompUnit`; Sema produces a `sema::SemanticModel`; member three's IR generator produces `codegen::contract::IRModule` for the backend.
 
 ### 开发中 / In Development
 
-- **Driver 端到端接线**: 待接入 `Sema -> ContractIRGenerator -> verifyContractModule -> RiscvBackend`
-- **端到端测试升级**: 当前 driver 集成测试仍按 parser-only 行为检查，后续需升级为汇编输出/执行验证
+- **端到端功能测试（M5）**: 当前已验证到 RISC-V32 汇编文本生成；待 RISC-V GCC + QEMU 环境接入后执行汇编、链接、运行和退出码比对
 - **IR 文档收敛**: 当前后端输入为 `ContractIR`；`src/ir/ir.h` 的旧结构 IR 仍保留但不是当前后端入口
 - **优化边界**: `-opt` 已由后端消费；如需 IR 层优化，需与后端优化边界继续协调
 - **实践报告**: 待编写
 
-The main remaining integration task is connecting the completed frontend/Sema/IR/backend modules inside `src/driver/main.cpp`. Interface contracts are defined in `docs/contracts/`.
+The default `toycc` path now connects the completed frontend/Sema/IR/backend modules inside `src/driver/main.cpp`. Interface contracts are defined in `docs/contracts/`.
 
 ### 当前行为 / Current Behavior
 
-- Parser 出现 Error 级语法诊断时，Driver 输出诊断并停止；Sema、IR 和 CodeGen 尚未接入 Driver 主流程
-- Parser 成功后 Driver 目前仍静默返回 0，stdout 保留给后续 RISC-V32 汇编输出
-- Sema、Contract IR 生成、IR 验证器和 CodeGen 已有独立库/测试，但尚未接入 Driver 主流程
+- 默认路径：`stdin → Lexer → Parser → Sema → Contract IR → IR Verify → RISC-V32 CodeGen → stdout`
+- 成功：完整汇编输出到 stdout，exit 0
+- 失败：诊断信息输出到 stderr，stdout 为空，exit 1
+- `--dump-tokens`：Lexer 后输出 token 到 stderr 并返回 0，不进入后续阶段
+- `-opt`：传递给后端 `BackendOptions.enableOpt`，启用 peephole 优化
 - 语义分析输入边界见 `docs/contracts/sema-input-contract.md`
 - IR/后端边界见 `docs/contracts/ir-contract.md` 与 `docs/contracts/ir_backend_contract.md`
 - 集成回归规格位于 `tests/integration/cases/`
@@ -61,7 +62,7 @@ cmake -S . -B build -G "MinGW Makefiles"
 
 ### 使用示例 / Usage Examples
 
-编译 ToyC 源文件（当前仅解析，成功返回 0）:
+编译 ToyC 源文件（全链路编译，输出 RISC-V32 汇编）:
 
 ```bash
 # Unix
@@ -81,7 +82,7 @@ echo "int main() { return 0; }" | ./build/toycc --dump-tokens
 Get-Content program.tc | .\build\toycc.exe --dump-tokens
 ```
 
-开启优化（参数已保留，端到端接线后传递给后端）:
+开启优化（传递给后端启用 peephole 优化）:
 
 ```bash
 echo "int main() { return 0; }" | ./build/toycc -opt
@@ -89,7 +90,7 @@ echo "int main() { return 0; }" | ./build/toycc -opt
 
 ### 输出约定 / Output Convention
 
-- **stdout**: Driver 端到端接线后输出 RISC-V32 汇编；当前 parser-only 路径保持为空
+- **stdout**: 输出 RISC-V32 汇编（成功时）；编译失败时为空
 - **stderr**: Token dump、诊断信息
 - **退出码**: 0=成功，1=编译错误，2=参数错误
 
@@ -185,8 +186,8 @@ Interface changes must be submitted together with the corresponding header and c
 | M1 | Lexer + AST + Parser | ✅ 已完成 |
 | M2 | Sema（语义分析） | ✅ 已完成模块实现与单元测试 |
 | M3 | IR + CFG（中间表示） | ✅ Contract IR 生成器与 verifier 已完成模块实现 |
-| M4 | RISC-V32 CodeGen | ✅ 后端模块已完成，待 Driver 接线 |
-| M5 | 端到端功能测试 | ⏳ 待 Driver 升级后接入 |
+| M4 | RISC-V32 CodeGen | ✅ 已接入 Driver 全链路 |
+| M5 | 端到端功能测试 | ⏳ 待 RISC-V 工具链环境接入 |
 | M6 | `-opt` 性能优化 | 🔧 后端已有优化路径，IR 层优化待协调 |
 
 ### 编译器主链路 / Compiler Pipeline
@@ -196,7 +197,7 @@ stdin → Lexer → Parser → Sema → ContractIRGenerator → verifyContractMo
          ✅       ✅      ✅            ✅                    ✅              ✅
 ```
 
-当前 Driver 主流程范围仍是：Lexer → Parser → Driver（语法分析完成后返回 0）。Sema、IR 和 CodeGen 模块已完成，但还未接入 Driver 端到端输出。
+Driver 全链路已接线：stdin → Lexer → Parser → Sema → ContractIRGenerator → verifyContractModule → RISC-V32 CodeGen → stdout。成功输出汇编并 exit 0；失败输出诊断到 stderr 并 exit 1。
 
 ---
 
