@@ -20,10 +20,10 @@ Lexer, TokenStream, AST definitions, and the complete ToyC Parser are implemente
 
 - **Sema**: 语义分析（符号表、作用域、常量求值）— 接口契约已定义，待实现
 - **IR**: 中间表示与控制流图 — 数据结构已定义，待实现
-- **CodeGen**: RISC-V32 代码生成 — 待开发
+- **CodeGen**: RISC-V32 代码生成 — 初版完成（栈帧、调用约定、指令选择、汇编发射），待 Sema/IR 接线
 - **实践报告**: 待编写
 
-Sema, IR generation, and CodeGen are under staged development. Interface contracts are defined in `docs/contracts/`.
+Sema and IR generation are under staged development. CodeGen has a working RISC-V32 backend awaiting Sema and IR integration. Interface contracts are defined in `docs/contracts/`.
 
 ### 当前行为 / Current Behavior
 
@@ -106,7 +106,15 @@ src/
 ├── ir/              中间表示与控制流图 [待实现]
 │   └── ir.h             IR 数据结构定义
 ├── sema/            语义分析（符号表、作用域、常量求值）[待实现]
-├── codegen/         RISC-V32 代码生成 [待实现]
+├── codegen/         RISC-V32 代码生成（初版完成）
+│   ├── RiscvBackend        后端入口
+│   ├── RiscvEmitter        汇编指令发射
+│   ├── StackFrame          栈帧布局
+│   ├── CallingConvention   调用约定
+│   ├── InstructionSelector IR→RISC-V 指令选择
+│   ├── VRegCollector       虚拟寄存器收集
+│   ├── FunctionEmitter     函数体发射
+│   └── ContractIR          后端自有 IR 中间表示
 └── driver/          编译器入口
     └── main.cpp         主程序入口和命令行参数处理
 tests/
@@ -114,10 +122,16 @@ tests/
 │   ├── lexer_tests.cpp
 │   ├── token_stream_tests.cpp
 │   └── parser_p*_tests.cpp   Parser 分阶段测试（P1-P5）
-├── unit/            各模块单元测试 [待添加]
+├── unit/            各模块单元测试
+│   ├── codegen_stack_frame_tests.cpp
+│   ├── codegen_backend_smoke_tests.cpp
+│   ├── codegen_calling_convention_tests.cpp
+│   └── codegen_vreg_collector_tests.cpp
 └── integration/     端到端集成测试
-    ├── cases/           ToyC 测试用例（.tc 文件）
-    └── driver/          Driver 集成测试
+    ├── cases/           ToyC 测试用例（.tc 文件，12 组）
+    ├── driver/          Driver 集成测试
+    ├── codegen_snapshot_tests.cpp
+    └── driver_test.cmake
 docs/
 ├── contracts/       接口契约文档
 │   ├── frontend-contract.md    Token、Lexer、TokenStream 接口
@@ -159,7 +173,7 @@ Interface changes must be submitted together with the corresponding header and c
 | M1 | Lexer + AST + Parser | ✅ 已完成 |
 | M2 | Sema（语义分析） | ⏳ 待实现 |
 | M3 | IR + CFG（中间表示） | ⏳ 待实现 |
-| M4 | RISC-V32 CodeGen | ⏳ 待实现 |
+| M4 | RISC-V32 CodeGen | 🔧 初版完成，待 Sema/IR 接线 |
 | M5 | 端到端功能测试 | ⏳ 待实现 |
 | M6 | `-opt` 性能优化 | ⏳ 待实现 |
 
@@ -167,10 +181,10 @@ Interface changes must be submitted together with the corresponding header and c
 
 ```text
 stdin → Lexer → Parser → Sema → IRGenerator → verifyModule → CodeGen → stdout
-         ✅       ✅      ⏳       ⏳            ⏳           ⏳
+         ✅       ✅      ⏳       ⏳            ⏳           🔧
 ```
 
-当前实现范围：Lexer → Parser → Driver（语法分析完成，后续阶段待开发）
+当前实现范围：Lexer → Parser → Driver（语法分析完成）；CodeGen 初版已完成，待 Sema/IR 接线
 
 ---
 
