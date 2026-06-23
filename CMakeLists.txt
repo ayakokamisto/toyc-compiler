@@ -173,7 +173,7 @@ add_test(
         -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/syntax_error.tc
         -DEXPECTED_EXIT=1
         -DEXPECT_STDOUT_EMPTY=ON
-        -EXPECT_DIAGNOSTIC=ON
+        -DEXPECT_DIAGNOSTIC=ON
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
 
@@ -184,7 +184,7 @@ add_test(
         -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/semantic_errors.tc
         -DEXPECTED_EXIT=1
         -DEXPECT_STDOUT_EMPTY=ON
-        -EXPECT_DIAGNOSTIC=ON
+        -DEXPECT_DIAGNOSTIC=ON
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
 
