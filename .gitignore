@@ -10,3 +10,5 @@ build/
 
 # Agent files
 AGENTS.md
+
+.claude

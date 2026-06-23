@@ -49,11 +49,29 @@ target_include_directories(toyc_codegen
 
 toyc_apply_warnings(toyc_codegen)
 
+add_library(toyc_sema
+    src/sema/semantic_model.cpp
+    src/sema/sema.cpp
+    src/sema/const_eval.cpp
+    src/sema/return_check.cpp
+)
+
+target_include_directories(toyc_sema
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(toyc_sema
+    PUBLIC toyc_frontend
+)
+
+toyc_apply_warnings(toyc_sema)
+
 add_executable(toycc
     src/driver/main.cpp
 )
 
-target_link_libraries(toycc PRIVATE toyc_frontend)
+target_link_libraries(toycc PRIVATE toyc_sema toyc_frontend)
 toyc_apply_warnings(toycc)
 
 enable_testing()
@@ -213,6 +231,51 @@ foreach(case_name IN LISTS TOYC_INTEGRATION_CASES)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
     )
 endforeach()
+
+add_executable(sema_symbol_tests
+    tests/unit/sema_symbol_tests.cpp
+)
+
+target_link_libraries(sema_symbol_tests PRIVATE toyc_sema)
+toyc_apply_warnings(sema_symbol_tests)
+
+add_test(NAME sema_symbol_tests COMMAND sema_symbol_tests)
+
+add_executable(sema_model_tests
+    tests/unit/sema_model_tests.cpp
+)
+
+target_link_libraries(sema_model_tests PRIVATE toyc_sema)
+toyc_apply_warnings(sema_model_tests)
+
+add_test(NAME sema_model_tests COMMAND sema_model_tests)
+
+add_executable(sema_const_eval_tests
+    tests/unit/sema_const_eval_tests.cpp
+)
+
+target_link_libraries(sema_const_eval_tests PRIVATE toyc_sema)
+toyc_apply_warnings(sema_const_eval_tests)
+
+add_test(NAME sema_const_eval_tests COMMAND sema_const_eval_tests)
+
+add_executable(sema_return_check_tests
+    tests/unit/sema_return_check_tests.cpp
+)
+
+target_link_libraries(sema_return_check_tests PRIVATE toyc_sema)
+toyc_apply_warnings(sema_return_check_tests)
+
+add_test(NAME sema_return_check_tests COMMAND sema_return_check_tests)
+
+add_executable(sema_analysis_tests
+    tests/unit/sema_analysis_tests.cpp
+)
+
+target_link_libraries(sema_analysis_tests PRIVATE toyc_sema)
+toyc_apply_warnings(sema_analysis_tests)
+
+add_test(NAME sema_analysis_tests COMMAND sema_analysis_tests)
 
 add_executable(codegen_stack_frame_tests
     tests/unit/codegen_stack_frame_tests.cpp
