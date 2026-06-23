@@ -3,6 +3,8 @@
 #include "codegen/abi/CallingConvention.h"
 #include "codegen/ContractIR.h"
 #include "codegen/frame/StackFrame.h"
+#include "codegen/frame/VRegAssignment.h"
+#include "codegen/lower/BlockVRegCache.h"
 
 #include <string_view>
 
@@ -12,8 +14,12 @@ class RiscvEmitter;
 
 class InstructionSelector {
 public:
-    InstructionSelector(RiscvEmitter& emitter, const StackFrame& frame, bool enableOpt = false);
+    InstructionSelector(RiscvEmitter& emitter,
+                        const StackFrame& frame,
+                        const VRegAssignment& assignment,
+                        bool enableOpt = false);
 
+    void beginBasicBlock();
     void emit(const contract::Instruction& instruction);
     void emitTerminator(const contract::Terminator& terminator,
                         std::string_view functionName,
@@ -24,6 +30,8 @@ public:
                                                  std::string_view functionName);
 
 private:
+    void loadVReg(std::string_view reg, std::string_view vreg);
+    void storeVReg(std::string_view vreg, std::string_view reg);
     void emitBinaryInputs(std::string_view src1, std::string_view src2);
     void emitBinaryOp(std::string_view dst,
                       std::string_view src1,
@@ -37,7 +45,9 @@ private:
 
     RiscvEmitter& emitter_;
     const StackFrame& frame_;
+    const VRegAssignment& assignment_;
     CallingConvention abi_;
+    BlockVRegCache vregCache_;
     bool enableOpt_ = false;
 };
 

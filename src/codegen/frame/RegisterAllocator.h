@@ -2,14 +2,21 @@
 
 #include "codegen/ContractIR.h"
 #include "codegen/frame/StackFrame.h"
+#include "codegen/frame/VRegAssignment.h"
 
 namespace toyc::codegen {
 
-// Phase-one conservative allocator: every vreg maps to one stack slot.
-// Future register assignment can extend this module without touching emitters.
+struct RegisterAllocation {
+    StackFrame frame;
+    VRegAssignment assignment;
+};
+
 class RegisterAllocator {
 public:
-    [[nodiscard]] static StackFrame allocate(const contract::IRFunction& function);
+    // Default: every vreg gets a stack slot. With enableOpt: assign live intervals
+    // to s1-s11 using linear-scan active-set allocation; spilled intervals stay on stack.
+    [[nodiscard]] static RegisterAllocation allocate(const contract::IRFunction& function,
+                                                     bool enableOpt = false);
 };
 
 } // namespace toyc::codegen

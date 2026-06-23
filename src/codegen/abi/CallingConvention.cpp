@@ -11,8 +11,10 @@ constexpr int kWordBytes = 4;
 
 } // namespace
 
-CallingConvention::CallingConvention(RiscvEmitter& emitter, const StackFrame& frame)
-    : emitter_(emitter), frame_(frame) {}
+CallingConvention::CallingConvention(RiscvEmitter& emitter,
+                                     const StackFrame& frame,
+                                     const VRegAssignment& assignment)
+    : emitter_(emitter), frame_(frame), assignment_(assignment) {}
 
 int CallingConvention::stackArgBytesFor(std::size_t argCount) {
     if (argCount <= kArgRegs.size()) {
@@ -39,7 +41,20 @@ void CallingConvention::emitEpilogue() const {
 
 void CallingConvention::emitParamLanding(const contract::IRFunction& function) const {
     for (std::size_t i = 0; i < function.params.size(); ++i) {
-        const int slotOffset = frame_.vregOffsetFromS0(function.params[i].vreg);
+        const contract::Param& param = function.params[i];
+        if (const std::optional<std::string_view> physReg = assignment_.physicalReg(param.vreg)) {
+            if (i < kArgRegs.size()) {
+                emitter_.instruction("mv", {*physReg, kArgRegs[i]});
+            } else {
+                const int incomingStackOffset =
+                    static_cast<int>((i - kArgRegs.size()) * kWordBytes);
+                emitter_.instruction("lw", {"t0", offsetReg(incomingStackOffset, "s0")});
+                emitter_.instruction("mv", {*physReg, "t0"});
+            }
+            continue;
+        }
+
+        const int slotOffset = frame_.vregOffsetFromS0(param.vreg);
         if (i < kArgRegs.size()) {
             emitter_.instruction("sw", {kArgRegs[i], offsetReg(slotOffset, "s0")});
             continue;
@@ -52,15 +67,27 @@ void CallingConvention::emitParamLanding(const contract::IRFunction& function) c
 }
 
 void CallingConvention::loadVReg(std::string_view reg, std::string_view vreg) const {
+    if (const std::optional<std::string_view> physReg = assignment_.physicalReg(vreg)) {
+        if (*physReg != reg) {
+            emitter_.instruction("mv", {reg, *physReg});
+        }
+        return;
+    }
     emitter_.instruction("lw", {reg, offsetReg(frame_.vregOffsetFromS0(vreg), "s0")});
 }
 
 void CallingConvention::storeVReg(std::string_view vreg, std::string_view reg) const {
+    if (const std::optional<std::string_view> physReg = assignment_.physicalReg(vreg)) {
+        if (*physReg != reg) {
+            emitter_.instruction("mv", {*physReg, reg});
+        }
+        return;
+    }
     emitter_.instruction("sw", {reg, offsetReg(frame_.vregOffsetFromS0(vreg), "s0")});
 }
 
 void CallingConvention::loadReturnValue(std::string_view vreg) const {
-    emitter_.instruction("lw", {"a0", offsetReg(frame_.vregOffsetFromS0(vreg), "s0")});
+    loadVReg("a0", vreg);
 }
 
 void CallingConvention::emitCallArgs(const std::vector<std::string>& args) const {

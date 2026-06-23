@@ -28,12 +28,16 @@ toyc_apply_warnings(toyc_frontend)
 
 add_library(toyc_codegen
     src/codegen/RiscvBackend.cpp
+    src/codegen/IrOperandUtils.cpp
     src/codegen/emit/RiscvEmitter.cpp
     src/codegen/frame/StackFrame.cpp
     src/codegen/abi/CallingConvention.cpp
     src/codegen/lower/InstructionSelector.cpp
     src/codegen/frame/VRegCollector.cpp
+    src/codegen/frame/VRegAnalysis.cpp
+    src/codegen/frame/VRegAssignment.cpp
     src/codegen/lower/FunctionEmitter.cpp
+    src/codegen/lower/BranchFusionAnalysis.cpp
     src/codegen/frame/RegisterAllocator.cpp
     src/codegen/opt/PeepholeOptimizer.cpp
 )
@@ -255,6 +259,22 @@ toyc_apply_warnings(codegen_snapshot_tests)
 
 add_test(NAME codegen_snapshot_tests COMMAND codegen_snapshot_tests)
 
+add_executable(codegen_golden_tests
+    tests/integration/codegen/golden_tests.cpp
+)
+
+target_link_libraries(codegen_golden_tests PRIVATE toyc_codegen)
+toyc_apply_warnings(codegen_golden_tests)
+
+add_test(NAME codegen_golden_tests COMMAND codegen_golden_tests)
+
+add_executable(codegen_contract_exec_cases
+    tests/integration/codegen/contract_exec_cases.cpp
+)
+
+target_link_libraries(codegen_contract_exec_cases PRIVATE toyc_codegen)
+toyc_apply_warnings(codegen_contract_exec_cases)
+
 add_executable(codegen_peephole_tests
     tests/unit/codegen_peephole_tests.cpp
 )
@@ -263,3 +283,30 @@ target_link_libraries(codegen_peephole_tests PRIVATE toyc_codegen)
 toyc_apply_warnings(codegen_peephole_tests)
 
 add_test(NAME codegen_peephole_tests COMMAND codegen_peephole_tests)
+
+add_executable(codegen_vreg_cache_tests
+    tests/unit/codegen_vreg_cache_tests.cpp
+)
+
+target_link_libraries(codegen_vreg_cache_tests PRIVATE toyc_codegen)
+toyc_apply_warnings(codegen_vreg_cache_tests)
+
+add_test(NAME codegen_vreg_cache_tests COMMAND codegen_vreg_cache_tests)
+
+add_executable(codegen_branch_fusion_tests
+    tests/unit/codegen_branch_fusion_tests.cpp
+)
+
+target_link_libraries(codegen_branch_fusion_tests PRIVATE toyc_codegen)
+toyc_apply_warnings(codegen_branch_fusion_tests)
+
+add_test(NAME codegen_branch_fusion_tests COMMAND codegen_branch_fusion_tests)
+
+add_executable(codegen_register_allocator_tests
+    tests/unit/codegen_register_allocator_tests.cpp
+)
+
+target_link_libraries(codegen_register_allocator_tests PRIVATE toyc_codegen)
+toyc_apply_warnings(codegen_register_allocator_tests)
+
+add_test(NAME codegen_register_allocator_tests COMMAND codegen_register_allocator_tests)

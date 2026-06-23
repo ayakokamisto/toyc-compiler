@@ -22,6 +22,8 @@ class StackFrame {
 public:
     void addVReg(std::string_view vreg);
     void addCalleeSavedRegister(std::string_view reg);
+    // Records the maximum per-call outgoing stack-arg area (16-byte aligned).
+    // Not included in frameSizeBytes(); each call site adjusts sp dynamically.
     void setOutgoingArgBytes(int bytes);
     void finalize();
 

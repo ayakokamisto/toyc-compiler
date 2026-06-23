@@ -311,6 +311,51 @@ void testOptCompareBranchFusionSnapshot() {
     expectAssemblyContains(assembly, "    j main__else_0\n", "fused branch to else");
 }
 
+void testOptPinsHotLoopVRegsToCalleeSavedSnapshot() {
+    toyc::codegen::contract::IRModule module;
+    module.functions.push_back({
+        "main",
+        toyc::codegen::contract::Type::Int,
+        {},
+        {
+            {
+                "entry",
+                {
+                    toyc::codegen::contract::ConstInst{"%i", 0},
+                    toyc::codegen::contract::ConstInst{"%sum", 0},
+                    toyc::codegen::contract::ConstInst{"%limit", 3},
+                },
+                toyc::codegen::contract::JumpInst{"while_cond"},
+            },
+            {
+                "while_cond",
+                {toyc::codegen::contract::LtInst{"%cond", "%i", "%limit"}},
+                toyc::codegen::contract::BranchInst{"%cond", "while_body", "while_exit"},
+            },
+            {
+                "while_body",
+                {
+                    toyc::codegen::contract::AddInst{"%sum", "%sum", "%i"},
+                    toyc::codegen::contract::ConstInst{"%one", 1},
+                    toyc::codegen::contract::AddInst{"%i", "%i", "%one"},
+                },
+                toyc::codegen::contract::JumpInst{"while_cond"},
+            },
+            {
+                "while_exit",
+                {},
+                toyc::codegen::contract::ReturnInst{"%sum"},
+            },
+        },
+    });
+
+    toyc::codegen::BackendOptions options;
+    options.enableOpt = true;
+    const std::string assembly = toyc::codegen::RiscvBackend().generate(module, options);
+    expectAssemblyContains(assembly, "    sw s1", "hot loop counter is saved in prologue");
+    expectAssemblyContains(assembly, "    mv a0, s", "return value can be loaded from callee-saved reg");
+}
+
 void testMultiFunctionModuleSnapshot() {
     toyc::codegen::contract::IRModule module;
     module.globalVars.push_back({"@g", 5});
@@ -357,6 +402,7 @@ int main() {
         testBreakContinueCfgSnapshot();
         testOptRemovesFallThroughJumpSnapshot();
         testOptCompareBranchFusionSnapshot();
+        testOptPinsHotLoopVRegsToCalleeSavedSnapshot();
         testMultiFunctionModuleSnapshot();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';

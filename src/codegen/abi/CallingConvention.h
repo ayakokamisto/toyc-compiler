@@ -2,6 +2,7 @@
 
 #include "codegen/ContractIR.h"
 #include "codegen/frame/StackFrame.h"
+#include "codegen/frame/VRegAssignment.h"
 
 #include <array>
 #include <cstddef>
@@ -19,7 +20,9 @@ public:
         "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
     };
 
-    CallingConvention(RiscvEmitter& emitter, const StackFrame& frame);
+    CallingConvention(RiscvEmitter& emitter,
+                      const StackFrame& frame,
+                      const VRegAssignment& assignment = {});
 
     [[nodiscard]] static int stackArgBytesFor(std::size_t argCount);
 
@@ -35,6 +38,7 @@ public:
 private:
     RiscvEmitter& emitter_;
     const StackFrame& frame_;
+    const VRegAssignment& assignment_;
 };
 
 } // namespace toyc::codegen
