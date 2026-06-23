@@ -1,7 +1,12 @@
+#include "codegen/BackendOptions.h"
+#include "codegen/RiscvBackend.h"
 #include "common/token_stream.h"
+#include "ir/contract_ir_generator.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
+#include "sema/sema.h"
 
+#include <exception>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -38,6 +43,15 @@ void dumpTokens(const std::vector<toyc::Token>& tokens) {
     }
 }
 
+bool hasError(const std::vector<toyc::Diagnostic>& diagnostics) {
+    for (const toyc::Diagnostic& diagnostic : diagnostics) {
+        if (diagnostic.severity == toyc::DiagnosticSeverity::Error) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void printDiagnostic(const toyc::Diagnostic& diagnostic) {
     const char* severity = diagnostic.severity == toyc::DiagnosticSeverity::Error
                                ? "error"
@@ -53,6 +67,12 @@ void printDiagnostic(const toyc::Diagnostic& diagnostic) {
     }
     std::cerr << diagnostic.range.begin.line << ':' << diagnostic.range.begin.column << ": "
               << severity << ": " << message << '\n';
+}
+
+void printDiagnostics(const std::vector<toyc::Diagnostic>& diagnostics) {
+    for (const toyc::Diagnostic& diagnostic : diagnostics) {
+        printDiagnostic(diagnostic);
+    }
 }
 
 } // namespace
@@ -76,18 +96,45 @@ int main(int argc, char** argv) {
         toyc::TokenStream tokenStream(tokens);
         toyc::parser::Parser parser(tokenStream);
         const std::unique_ptr<toyc::ast::CompUnit> unit = parser.parseCompUnit();
-        for (const toyc::Diagnostic& diagnostic : parser.diagnostics()) {
-            printDiagnostic(diagnostic);
-        }
-        if (parser.hasError()) {
+        printDiagnostics(parser.diagnostics());
+        if (parser.hasError() || hasError(parser.diagnostics())) {
             return 1;
         }
 
-        (void)unit;
-        (void)options;
+        toyc::sema::Sema sema;
+        toyc::sema::SemaResult semaResult = sema.analyze(*unit);
+        printDiagnostics(semaResult.diagnostics);
+        if (hasError(semaResult.diagnostics)) {
+            return 1;
+        }
+
+        toyc::ir::ContractIRGenerator irGenerator;
+        toyc::codegen::contract::IRModule module =
+            irGenerator.generate(*unit, semaResult.model);
+        printDiagnostics(irGenerator.diagnostics());
+        if (hasError(irGenerator.diagnostics())) {
+            return 1;
+        }
+
+        std::vector<toyc::Diagnostic> verifierDiagnostics;
+        const bool verificationSucceeded =
+            toyc::ir::verifyContractModule(module, verifierDiagnostics);
+        printDiagnostics(verifierDiagnostics);
+        if (!verificationSucceeded || hasError(verifierDiagnostics)) {
+            return 1;
+        }
+
+        toyc::codegen::BackendOptions backendOptions;
+        backendOptions.enableOpt = options.optimize;
+        const std::string assembly =
+            toyc::codegen::RiscvBackend().generate(module, backendOptions);
+        std::cout << assembly;
         return 0;
     } catch (const toyc::LexError& error) {
         std::cerr << error.what() << '\n';
+        return 1;
+    } catch (const std::exception& error) {
+        std::cerr << "internal error: " << error.what() << '\n';
         return 1;
     }
 }
