@@ -86,7 +86,7 @@ add_executable(toycc
     src/driver/main.cpp
 )
 
-target_link_libraries(toycc PRIVATE toyc_sema toyc_frontend)
+target_link_libraries(toycc PRIVATE toyc_ir toyc_codegen toyc_sema toyc_frontend)
 toyc_apply_warnings(toycc)
 
 enable_testing()
@@ -160,7 +160,9 @@ add_test(
         -DTOYCC=$<TARGET_FILE:toycc>
         -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/valid_parser.tc
         -DEXPECTED_EXIT=0
-        -DEXPECT_PARSER_ERROR=OFF
+        -DEXPECT_STDOUT_NONEMPTY=ON
+        -DEXPECTED_STDOUT_PATTERN=main:
+        -DEXPECT_STDERR_EMPTY=ON
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
 
@@ -170,29 +172,32 @@ add_test(
         -DTOYCC=$<TARGET_FILE:toycc>
         -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/syntax_error.tc
         -DEXPECTED_EXIT=1
-        -DEXPECT_PARSER_ERROR=ON
+        -DEXPECT_STDOUT_EMPTY=ON
+        -EXPECT_DIAGNOSTIC=ON
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
 
-# This program is syntactically valid. Sema will reject it after Sema is integrated.
 add_test(
-    NAME parser_accepts_semantic_errors
+    NAME semantic_errors_driver
     COMMAND ${CMAKE_COMMAND}
         -DTOYCC=$<TARGET_FILE:toycc>
         -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/semantic_errors.tc
-        -DEXPECTED_EXIT=0
-        -DEXPECT_PARSER_ERROR=OFF
+        -DEXPECTED_EXIT=1
+        -DEXPECT_STDOUT_EMPTY=ON
+        -EXPECT_DIAGNOSTIC=ON
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
 
 add_test(
-    NAME opt_syntax_error_driver
+    NAME opt_driver
     COMMAND ${CMAKE_COMMAND}
         -DTOYCC=$<TARGET_FILE:toycc>
-        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/syntax_error.tc
-        -DEXPECTED_EXIT=1
-        -DEXPECT_PARSER_ERROR=ON
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/valid_parser.tc
+        -DEXPECTED_EXIT=0
         -DTOYCC_ARGS=-opt
+        -DEXPECT_STDOUT_NONEMPTY=ON
+        -DEXPECTED_STDOUT_PATTERN=main:
+        -DEXPECT_STDERR_EMPTY=ON
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
 
@@ -202,20 +207,20 @@ add_test(
         -DTOYCC=$<TARGET_FILE:toycc>
         -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/valid_parser.tc
         -DEXPECTED_EXIT=0
-        -DEXPECT_PARSER_ERROR=OFF
         -DTOYCC_ARGS=--dump-tokens
+        -DEXPECT_STDOUT_EMPTY=ON
         -DEXPECTED_STDERR_PATTERN=EOF
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
 
 add_test(
-    NAME unknown_option_driver
+    NAME unknown_argument_driver
     COMMAND ${CMAKE_COMMAND}
         -DTOYCC=$<TARGET_FILE:toycc>
         -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver/valid_parser.tc
         -DEXPECTED_EXIT=2
-        -DEXPECT_PARSER_ERROR=OFF
         -DTOYCC_ARGS=--bad-option
+        -DEXPECT_STDOUT_EMPTY=ON
         -DEXPECTED_STDERR_PATTERN=unknown.option
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
 )
@@ -242,7 +247,9 @@ foreach(case_name IN LISTS TOYC_INTEGRATION_CASES)
             -DTOYCC=$<TARGET_FILE:toycc>
             -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/cases/${case_name}.tc
             -DEXPECTED_EXIT=0
-            -DEXPECT_PARSER_ERROR=OFF
+            -DEXPECT_STDOUT_NONEMPTY=ON
+            -DEXPECTED_STDOUT_PATTERN=main:
+            -DEXPECT_STDERR_EMPTY=ON
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
     )
 endforeach()
