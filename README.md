@@ -12,24 +12,30 @@ ToyC is a simplified subset of C. This project is a ToyC compiler targeting RISC
 - **TokenStream**: Token 流封装，支持 peek/consume/expect/match 操作
 - **AST**: 完整的抽象语法树节点定义，覆盖 ToyC 所有语法结构
 - **Parser**: 递归下降语法分析器，实现全部 ToyC 文法产生式，含错误恢复机制
-- **Driver**: 编译器入口，集成 Lexer、Parser 和 Parser Diagnostic，支持 `-opt` 和 `--dump-tokens` 参数
+- **Sema**: 语义分析已实现，覆盖符号表、嵌套作用域、常量求值、函数签名、返回检查、`break`/`continue` 合法性
+- **IR**: 成员三交付的 `ContractIRGenerator` 已实现，可将 AST + `SemanticModel` 降低为后端契约 IR，并提供结构验证器
+- **CodeGen**: RISC-V32 后端已实现，覆盖栈帧、调用约定、指令选择、汇编发射、寄存器分配和后端优化路径
+- **Driver**: 编译器入口已集成 Lexer、Parser 和 Parser Diagnostic，支持 `-opt` 和 `--dump-tokens` 参数
 
-Lexer, TokenStream, AST definitions, and the complete ToyC Parser are implemented. Parser produces an `ast::CompUnit`. Driver integrates Lexer, Parser, and Parser diagnostics with error recovery.
+Lexer, Parser, Sema, contract IR generation, IR verification, and the RISC-V32 backend are implemented as module-level components. Parser produces an `ast::CompUnit`; Sema produces a `sema::SemanticModel`; member three's IR generator produces `codegen::contract::IRModule` for the backend.
 
 ### 开发中 / In Development
 
-- **Sema**: 语义分析（符号表、作用域、常量求值）— 接口契约已定义，待实现
-- **IR**: 中间表示与控制流图 — 数据结构已定义，待实现
-- **CodeGen**: RISC-V32 代码生成 — 初版完成（栈帧、调用约定、指令选择、汇编发射），待 Sema/IR 接线
+- **Driver 端到端接线**: 待接入 `Sema -> ContractIRGenerator -> verifyContractModule -> RiscvBackend`
+- **端到端测试升级**: 当前 driver 集成测试仍按 parser-only 行为检查，后续需升级为汇编输出/执行验证
+- **IR 文档收敛**: 当前后端输入为 `ContractIR`；`src/ir/ir.h` 的旧结构 IR 仍保留但不是当前后端入口
+- **优化边界**: `-opt` 已由后端消费；如需 IR 层优化，需与后端优化边界继续协调
 - **实践报告**: 待编写
 
-Sema and IR generation are under staged development. CodeGen has a working RISC-V32 backend awaiting Sema and IR integration. Interface contracts are defined in `docs/contracts/`.
+The main remaining integration task is connecting the completed frontend/Sema/IR/backend modules inside `src/driver/main.cpp`. Interface contracts are defined in `docs/contracts/`.
 
 ### 当前行为 / Current Behavior
 
-- Parser 出现 Error 级语法诊断时，Driver 输出诊断并停止进入 Sema、IR 和 CodeGen
-- Parser 成功后静默返回 0，stdout 保留给后续 RISC-V32 汇编输出
+- Parser 出现 Error 级语法诊断时，Driver 输出诊断并停止；Sema、IR 和 CodeGen 尚未接入 Driver 主流程
+- Parser 成功后 Driver 目前仍静默返回 0，stdout 保留给后续 RISC-V32 汇编输出
+- Sema、Contract IR 生成、IR 验证器和 CodeGen 已有独立库/测试，但尚未接入 Driver 主流程
 - 语义分析输入边界见 `docs/contracts/sema-input-contract.md`
+- IR/后端边界见 `docs/contracts/ir-contract.md` 与 `docs/contracts/ir_backend_contract.md`
 - 集成回归规格位于 `tests/integration/cases/`
 
 ## 构建与测试 / Build and Test
@@ -75,7 +81,7 @@ echo "int main() { return 0; }" | ./build/toycc --dump-tokens
 Get-Content program.tc | .\build\toycc.exe --dump-tokens
 ```
 
-开启优化（预留参数，待后端实现）:
+开启优化（参数已保留，端到端接线后传递给后端）:
 
 ```bash
 echo "int main() { return 0; }" | ./build/toycc -opt
@@ -83,7 +89,7 @@ echo "int main() { return 0; }" | ./build/toycc -opt
 
 ### 输出约定 / Output Convention
 
-- **stdout**: 汇编代码输出（待实现）
+- **stdout**: Driver 端到端接线后输出 RISC-V32 汇编；当前 parser-only 路径保持为空
 - **stderr**: Token dump、诊断信息
 - **退出码**: 0=成功，1=编译错误，2=参数错误
 
@@ -103,10 +109,12 @@ src/
 │   └── parser.cpp       Parser 实现
 ├── ast/             抽象语法树节点定义
 │   └── ast.h            所有 AST 节点类型
-├── ir/              中间表示与控制流图 [待实现]
-│   └── ir.h             IR 数据结构定义
-├── sema/            语义分析（符号表、作用域、常量求值）[待实现]
-├── codegen/         RISC-V32 代码生成（初版完成）
+├── ir/              Contract IR 生成与结构验证
+│   ├── contract_ir_generator.h  AST/Sema → 后端契约 IR 入口
+│   ├── contract_ir_generator.cpp IR lowering 与 verifier 实现
+│   └── ir.h             旧结构 IR 声明（当前非后端输入）
+├── sema/            语义分析（符号表、作用域、常量求值）
+├── codegen/         RISC-V32 代码生成
 │   ├── RiscvBackend        后端入口
 │   ├── RiscvEmitter        汇编指令发射
 │   ├── StackFrame          栈帧布局
@@ -126,6 +134,8 @@ tests/
 │   ├── codegen_stack_frame_tests.cpp
 │   ├── codegen_backend_smoke_tests.cpp
 │   ├── codegen_calling_convention_tests.cpp
+│   ├── ir_contract_generator_tests.cpp
+│   ├── sema_analysis_tests.cpp
 │   └── codegen_vreg_collector_tests.cpp
 └── integration/     端到端集成测试
     ├── cases/           ToyC 测试用例（.tc 文件，12 组）
@@ -138,7 +148,8 @@ docs/
 │   ├── ast-contract.md         AST 节点层次和所有权模型
 │   ├── parser-contract.md      Parser 入口和文法决策
 │   ├── sema-input-contract.md  Sema 输入边界和职责
-│   └── ir-contract.md          IR 指令集和验证器约束
+│   ├── ir-contract.md          当前 IR/后端边界
+│   └── ir_backend_contract.md  成员三到成员四的详细后端契约
 ├── team-plan.md     团队协作计划
 └── report/          实践报告 [待编写]
 ```
@@ -151,7 +162,8 @@ docs/
 | [ast-contract.md](docs/contracts/ast-contract.md) | AST 节点层次、所有权模型、语法-语义边界 | ✅ 已冻结 |
 | [parser-contract.md](docs/contracts/parser-contract.md) | Parser 入口、文法决策、诊断与恢复策略 | ✅ 已冻结 |
 | [sema-input-contract.md](docs/contracts/sema-input-contract.md) | Parser AST 到 Sema 的输入边界与职责 | ✅ 已定义 |
-| [ir-contract.md](docs/contracts/ir-contract.md) | IR 指令集、CFG 降低规则、验证器约束 | ✅ 已定义 |
+| [ir-contract.md](docs/contracts/ir-contract.md) | 当前 IR/后端边界、ContractIRGenerator 与 verifier 约束 | ✅ 已定义 |
+| [ir_backend_contract.md](docs/contracts/ir_backend_contract.md) | 成员三到成员四的后端契约 IR 详细字段与指令约定 | ✅ 已定义 |
 
 接口变更需与对应头文件和契约文档同步提交。
 
@@ -171,20 +183,20 @@ Interface changes must be submitted together with the corresponding header and c
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
 | M1 | Lexer + AST + Parser | ✅ 已完成 |
-| M2 | Sema（语义分析） | ⏳ 待实现 |
-| M3 | IR + CFG（中间表示） | ⏳ 待实现 |
-| M4 | RISC-V32 CodeGen | 🔧 初版完成，待 Sema/IR 接线 |
-| M5 | 端到端功能测试 | ⏳ 待实现 |
-| M6 | `-opt` 性能优化 | ⏳ 待实现 |
+| M2 | Sema（语义分析） | ✅ 已完成模块实现与单元测试 |
+| M3 | IR + CFG（中间表示） | ✅ Contract IR 生成器与 verifier 已完成模块实现 |
+| M4 | RISC-V32 CodeGen | ✅ 后端模块已完成，待 Driver 接线 |
+| M5 | 端到端功能测试 | ⏳ 待 Driver 升级后接入 |
+| M6 | `-opt` 性能优化 | 🔧 后端已有优化路径，IR 层优化待协调 |
 
 ### 编译器主链路 / Compiler Pipeline
 
 ```text
-stdin → Lexer → Parser → Sema → IRGenerator → verifyModule → CodeGen → stdout
-         ✅       ✅      ⏳       ⏳            ⏳           🔧
+stdin → Lexer → Parser → Sema → ContractIRGenerator → verifyContractModule → CodeGen → stdout
+         ✅       ✅      ✅            ✅                    ✅              ✅
 ```
 
-当前实现范围：Lexer → Parser → Driver（语法分析完成）；CodeGen 初版已完成，待 Sema/IR 接线
+当前 Driver 主流程范围仍是：Lexer → Parser → Driver（语法分析完成后返回 0）。Sema、IR 和 CodeGen 模块已完成，但还未接入 Driver 端到端输出。
 
 ---
 

@@ -1,69 +1,98 @@
-# IR and CFG Contract
+# IR and Backend Boundary Contract
 
-## Public Model
+## Current Delivery Model
 
-The IR data model lives in `src/ir/ir.h` under `toyc::ir`:
+Member three delivers backend-ready IR as `toyc::codegen::contract::IRModule`.
+The generator entry point is:
 
-```text
-Module
-|- Global
-`- Function
-   |- Parameter
-   `- BasicBlock
-      `- Instruction
+```cpp
+toyc::ir::ContractIRGenerator::generate(
+    const ast::CompUnit& unit,
+    const sema::SemanticModel& semanticModel);
 ```
 
-IR types are `I32` and `Void`. A `ValueId` is unique within one function. A `BlockId`
-identifies a basic block within one function.
+The concrete backend consumption model lives in `src/codegen/ContractIR.h`.
+The detailed member-three/member-four interface is documented in
+`docs/contracts/ir_backend_contract.md`.
 
-An `Operand` is an `Immediate`, function-local `Value`, or `GlobalRef`. Calls store the
-callee name directly in `CallInst::callee`.
+`src/ir/ir.h` still describes an older `ValueId`/`BlockId` structural IR model.
+It is not the current RISC-V backend input. New member-three work should target
+`ContractIRGenerator` unless the team explicitly decides to reintroduce a
+separate canonical IR plus adapter.
 
-## Instructions
+## Pipeline Boundary
 
-- `BinaryInst`: addition, subtraction, multiplication, division, and remainder.
-- `CompareInst`: `<`, `>`, `<=`, `>=`, `==`, and `!=`, producing normalized `i32` 0 or 1.
-- `UnaryNotInst`: produces normalized `i32` 0 or 1.
-- `AllocaInst`, `LoadInst`, and `StoreInst`: local slots and global accesses.
-- `CallInst`: calls with `i32` result IDs or an empty result for `void` calls.
-- `JumpInst`, `BranchInst`, and `ReturnInst`: terminators.
+The supported member-three boundary is:
 
-Every basic block ends with exactly one terminator. A terminator is the final instruction
-in its block. `verifyModule()` checks this invariant, valid branch targets, local ID use,
-return compatibility, and other structural constraints before CodeGen.
+```text
+Parser AST + sema::SemanticModel
+  -> ir::ContractIRGenerator
+  -> ir::verifyContractModule
+  -> codegen::RiscvBackend
+```
 
-## Globals and Functions
+`ContractIRGenerator` expects Parser and Sema to have completed successfully.
+It leaves the AST and `SemanticModel` unchanged.
 
-`Parameter::index` defines source-order parameter position. Function-local `ValueId`
-allocation includes instruction results and local slots. `Global::initializer` is an
-`int32_t`; Sema guarantees that each global initializer has already evaluated to a
-compile-time integer.
+## Generated IR Shape
+
+Generated IR uses non-SSA virtual registers:
+
+- Parameters are named `%p0`, `%p1`, and so on in source order.
+- Local variables use stable source-derived vregs such as `%x`; shadowed locals
+  receive suffixes such as `%x_1`.
+- Expression temporaries use `%t0`, `%t1`, and so on.
+- Global variables use `@name`.
+
+The generator emits the instruction set consumed by member four:
+
+- `CONST` and `COPY` for immediates and local value movement.
+- `LOAD_GLOBAL` and `STORE_GLOBAL` for global variable access.
+- Arithmetic, comparison, unary minus, and logical-not instructions.
+- `CALL` for `int` functions and `CALL_VOID` for `void` functions.
+- `JUMP`, `BRANCH`, and `RETURN` terminators.
+
+Debug-only contract tables from `ir_backend_contract.md`, such as `constTable`,
+`funcTable`, and `symTable`, are not materialized in `ContractIR.h`; the backend
+does not consume them.
 
 ## CFG Lowering
 
-- An `if` creates condition, then, optional else, and merge blocks.
-- A `while` creates condition, body, and exit blocks. The body back edge targets the
-  condition block.
-- `break` targets the nearest loop exit block.
-- `continue` targets the nearest loop condition block.
-- `&&` evaluates its right operand only from the left-true edge.
-- `||` evaluates its right operand only from the left-false edge.
-- A logical expression used as a value stores 0 or 1 in a temporary stack slot along its
-  true and false paths, then loads the value in the merge block. The initial IR omits Phi
-  instructions.
+- Every function starts with an `entry` block.
+- Every block has exactly one terminator.
+- `if` emits then, optional else, and merge blocks.
+- `while` emits condition, body, and exit blocks.
+- `break` jumps to the nearest loop exit block.
+- `continue` jumps to the nearest loop condition block.
+- `&&` and `||` are lowered to explicit short-circuit `BRANCH` CFG. The right
+  operand is emitted only inside the path where it may execute.
 
-## Phase Boundary
+## Constants And Globals
 
-`IRGenerator` consumes a Sema-approved `ast::CompUnit` and `sema::SemanticModel`.
-CodeGen consumes an IR `Module` accepted by `verifyModule()`. IR generation and CodeGen
-leave the AST unchanged.
+Global constants and local constants are inlined as `CONST` values. They do not
+appear in `IRModule.globalVars`.
 
-The AST input must have completed Parser without Error-level diagnostics and must have
-completed Sema successfully. The `ast::CompUnit` and its matching `SemanticModel` both
-remain alive for the complete IRGenerator call. Driver follows
-`Parser -> Sema -> IRGenerator -> verifyModule -> CodeGen` and never bypasses Sema when
-constructing IR from source input.
+Global variables appear in `IRModule.globalVars` with a static `initValue`.
+`ContractIRGenerator` evaluates global variable initializers as compile-time
+constant expressions and reports diagnostics if that boundary is violated.
 
-The `-opt` implementation order is constant folding, dead-code elimination, basic-block
-simplification, local common-subexpression elimination, and simple register-allocation
-improvements.
+## Verification
+
+`verifyContractModule()` checks the member-three/member-four handoff:
+
+- each function has an `entry` block;
+- block labels are unique;
+- jump and branch targets exist;
+- all blocks are reachable from `entry`;
+- return operands match the function return type;
+- global references name declared global objects;
+- vreg uses have a definition source from parameters or instruction results.
+
+The verifier is intentionally structural. Parser and Sema remain responsible for
+source-language checks such as declaration-before-use, constant assignment
+errors, call arity, loop-control legality, and return completeness.
+
+## Optimization Boundary
+
+The `-opt` flag is consumed by the backend through `BackendOptions`. Member three
+emits the same contract IR regardless of optimization mode.

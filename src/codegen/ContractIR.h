@@ -1,12 +1,9 @@
 #pragma once
 
-// Backend consumption view aligned with docs_a/ir_backend_contract.md.
+// Backend consumption view aligned with docs/contracts/ir_backend_contract.md.
 // It keeps the fields and instructions codegen consumes, while omitting
 // debug-only contract tables such as constTable, funcTable, and symTable.
-// Member four consumes this shape directly; src/ir/ir.h is member three's
-// legacy placeholder and is intentionally not used by the backend.
-// When member three lands the contract-shaped IR in src/ir/, only the include
-// path and namespace need to change — lowering logic stays the same.
+// Member three produces this shape through src/ir/contract_ir_generator.h.
 
 #include <cstdint>
 #include <optional>

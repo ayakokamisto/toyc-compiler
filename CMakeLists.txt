@@ -67,6 +67,21 @@ target_link_libraries(toyc_sema
 
 toyc_apply_warnings(toyc_sema)
 
+add_library(toyc_ir
+    src/ir/contract_ir_generator.cpp
+)
+
+target_include_directories(toyc_ir
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(toyc_ir
+    PUBLIC toyc_sema
+)
+
+toyc_apply_warnings(toyc_ir)
+
 add_executable(toycc
     src/driver/main.cpp
 )
@@ -276,6 +291,15 @@ target_link_libraries(sema_analysis_tests PRIVATE toyc_sema)
 toyc_apply_warnings(sema_analysis_tests)
 
 add_test(NAME sema_analysis_tests COMMAND sema_analysis_tests)
+
+add_executable(ir_contract_generator_tests
+    tests/unit/ir_contract_generator_tests.cpp
+)
+
+target_link_libraries(ir_contract_generator_tests PRIVATE toyc_ir)
+toyc_apply_warnings(ir_contract_generator_tests)
+
+add_test(NAME ir_contract_generator_tests COMMAND ir_contract_generator_tests)
 
 add_executable(codegen_stack_frame_tests
     tests/unit/codegen_stack_frame_tests.cpp
