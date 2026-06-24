@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(toyc_compiler LANGUAGES CXX)
 
+option(TOYC_ENABLE_RISCV_EXEC_TESTS "Run RISC-V QEMU execution integration tests" OFF)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -258,6 +260,46 @@ foreach(case_name IN LISTS TOYC_INTEGRATION_CASES)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/driver_test.cmake
     )
 endforeach()
+
+if(TOYC_ENABLE_RISCV_EXEC_TESTS)
+    find_program(TOYC_BASH_EXECUTABLE bash)
+    find_program(TOYC_RISCV_GCC_EXECUTABLE riscv64-linux-gnu-gcc)
+    find_program(TOYC_QEMU_RISCV32_EXECUTABLE qemu-riscv32)
+
+    if(NOT TOYC_BASH_EXECUTABLE)
+        message(FATAL_ERROR
+            "TOYC_ENABLE_RISCV_EXEC_TESTS=ON requires bash. "
+            "Configure inside WSL/Unix, or leave the option OFF and run "
+            "tests/integration/run_toyc_exec_cases.sh manually from WSL.")
+    endif()
+
+    if(NOT TOYC_RISCV_GCC_EXECUTABLE)
+        message(FATAL_ERROR
+            "TOYC_ENABLE_RISCV_EXEC_TESTS=ON requires riscv64-linux-gnu-gcc "
+            "in PATH.")
+    endif()
+
+    if(NOT TOYC_QEMU_RISCV32_EXECUTABLE)
+        message(FATAL_ERROR
+            "TOYC_ENABLE_RISCV_EXEC_TESTS=ON requires qemu-riscv32 in PATH.")
+    endif()
+
+    if(WIN32)
+        message(WARNING
+            "RISC-V execution CTest is registered with a detected bash on Windows. "
+            "If path conversion fails under native PowerShell CTest, configure and "
+            "run this option from WSL instead.")
+    endif()
+
+    add_test(
+        NAME toycc_riscv_exec_cases
+        COMMAND "${TOYC_BASH_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_toyc_exec_cases.sh"
+            --build-dir build
+            --compiler "${TOYC_RISCV_GCC_EXECUTABLE}"
+            --runner "${TOYC_QEMU_RISCV32_EXECUTABLE}"
+    )
+endif()
 
 add_executable(sema_symbol_tests
     tests/unit/sema_symbol_tests.cpp
