@@ -19,6 +19,10 @@ constexpr std::array<std::string_view, 11> kCalleeSavedPool = {
     "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
 };
 
+constexpr int kCalleeSavedSaveRestoreCost = 2;
+constexpr int kMinimumRepeatedUseCount = 2;
+constexpr int kLoopWeightedProfitability = 10;
+
 struct ActiveInterval {
     LiveInterval interval;
     std::string reg;
@@ -58,6 +62,22 @@ bool isLessValuableForRegister(const LiveInterval& lhs, const LiveInterval& rhs)
     return lhs.vreg > rhs.vreg;
 }
 
+bool isProfitableForCalleeSavedRegister(const LiveInterval& interval) {
+    if (interval.useCount <= 0) {
+        return false;
+    }
+    if (interval.callCrossingCount > 0) {
+        return true;
+    }
+    if (interval.spillWeight >= kLoopWeightedProfitability) {
+        return true;
+    }
+    if (interval.spillWeight <= kCalleeSavedSaveRestoreCost) {
+        return false;
+    }
+    return interval.useCount >= kMinimumRepeatedUseCount;
+}
+
 void expireOldIntervals(const LiveInterval& current,
                         std::vector<ActiveInterval>& active,
                         std::vector<std::string>& freeRegs) {
@@ -77,7 +97,7 @@ VRegAssignment assignPhysicalRegistersLinearScan(const VRegAnalysis& analysis) {
     std::vector<LiveInterval> intervals;
     intervals.reserve(analysis.liveIntervals.size());
     for (const LiveInterval& interval : analysis.liveIntervals) {
-        if (interval.useCount > 0) {
+        if (isProfitableForCalleeSavedRegister(interval)) {
             intervals.push_back(interval);
         }
     }

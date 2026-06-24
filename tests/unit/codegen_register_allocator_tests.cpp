@@ -293,7 +293,7 @@ void testLinearScanCostModelKeepsLoopHotInterval() {
             "cost model should spill at least one cold interval for the loop hot interval");
 }
 
-void testLinearScanSpillsWhenPressureExceedsRegisterPool() {
+void testProfitabilityFilterKeepsColdSingleUseIntervalsOnStack() {
     const toyc::codegen::RegisterAllocation allocation =
         toyc::codegen::RegisterAllocator::allocate(pressureFunction(), true);
 
@@ -309,38 +309,32 @@ void testLinearScanSpillsWhenPressureExceedsRegisterPool() {
         }
     }
 
-    int assignedRegisterSlots = 0;
+    int assignedCalleeSavedSlots = 0;
     for (const toyc::codegen::SavedRegisterSlot& slot : allocation.frame.savedRegisterSlots()) {
         if (slot.reg != "ra" && slot.reg != "s0") {
-            ++assignedRegisterSlots;
+            ++assignedCalleeSavedSlots;
         }
     }
 
-    require(assignedRegisterSlots == 11,
-            "linear scan should use the full s1-s11 register pool under pressure");
     require(allocation.assignment.physicalReg("%acc").has_value(),
             "cost model should keep high-access accumulator in a register");
-    require(physicalInputCount < 12, "at least one overlapping input interval should spill");
-    require(stackInputCount >= 1, "spilled overlapping intervals should keep stack slots");
+    require(physicalInputCount == 0,
+            "single-use cold input intervals should not pay callee-saved save/restore cost");
+    require(stackInputCount == 12, "single-use cold inputs should keep stack slots");
+    require(assignedCalleeSavedSlots < 11,
+            "profitability filter should avoid filling the full s1-s11 pool with cold values");
 }
 
-void testLinearScanSpillsLongerActiveIntervalForShorterCurrent() {
+void testProfitabilityFilterRejectsShortSingleUseInterval() {
     const toyc::codegen::RegisterAllocation allocation =
         toyc::codegen::RegisterAllocator::allocate(spillPrefersShorterIntervalFunction(), true);
 
-    require(allocation.assignment.physicalReg("%short").has_value(),
-            "short interval should receive a register under pressure");
-
-    int spilledLongCount = 0;
-    for (int i = 0; i < 11; ++i) {
-        const std::string vreg = "%long" + std::to_string(i);
-        if (!allocation.assignment.physicalReg(vreg).has_value() &&
-            allocation.frame.containsVReg(vreg)) {
-            ++spilledLongCount;
-        }
-    }
-    require(spilledLongCount >= 1,
-            "linear scan should evict a longer active interval for the shorter interval");
+    require(!allocation.assignment.physicalReg("%short").has_value(),
+            "short single-use interval should stay on stack despite free registers");
+    require(allocation.frame.containsVReg("%short"),
+            "filtered short interval should keep a stack slot");
+    require(allocation.assignment.physicalReg("%acc").has_value(),
+            "repeated accumulator should still receive a register");
 }
 
 void testOptEmitsCalleeSavedInAssembly() {
@@ -378,8 +372,8 @@ int main() {
         testOptAssignsLiveIntervalsToCalleeSaved();
         testLinearScanKeepsCallCrossingIntervalUnderPressure();
         testLinearScanCostModelKeepsLoopHotInterval();
-        testLinearScanSpillsWhenPressureExceedsRegisterPool();
-        testLinearScanSpillsLongerActiveIntervalForShorterCurrent();
+        testProfitabilityFilterKeepsColdSingleUseIntervalsOnStack();
+        testProfitabilityFilterRejectsShortSingleUseInterval();
         testOptEmitsCalleeSavedInAssembly();
         testNonOptKeepsStackSlotsOnly();
     } catch (const std::exception& error) {
