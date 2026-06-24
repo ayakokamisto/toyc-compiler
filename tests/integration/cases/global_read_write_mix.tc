@@ -1,0 +1,22 @@
+int left = 2;
+int right = 5;
+int total = 1;
+
+int add_to_total(int value) {
+    total = total + value;
+    return total;
+}
+
+int swap_and_score(int value) {
+    int old_left = left;
+    left = right + value;
+    right = old_left + total;
+    return left + right + total;
+}
+
+int main() {
+    int first = add_to_total(4);
+    int second = swap_and_score(3);
+    total = total + left - right;
+    return first + second + total;
+}

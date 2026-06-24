@@ -235,6 +235,11 @@ set(TOYC_INTEGRATION_CASES
     arithmetic_precedence
     if_else
     while_break_continue
+    many_params_call
+    nested_call_pressure
+    stack_pressure_expr
+    global_read_write_mix
+    loop_call_control
     short_circuit_and
     short_circuit_or
     void_function

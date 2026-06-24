@@ -1,0 +1,18 @@
+int add(int left, int right) {
+    return left + right;
+}
+
+int mul_add(int left, int right, int extra) {
+    return left * right + extra;
+}
+
+int combine(int a, int b, int c, int d) {
+    int keep0 = a + b;
+    int keep1 = c + d;
+    int nested = add(mul_add(a, b, c), mul_add(b, c, d));
+    return keep0 + keep1 + nested;
+}
+
+int main() {
+    return combine(2, 3, 4, 5);
+}

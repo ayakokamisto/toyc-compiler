@@ -1,0 +1,17 @@
+int adjust(int value) {
+    return value * 2 + 1;
+}
+
+int main() {
+    int index = 0;
+    int sum = 0;
+    while (index < 9) {
+        index = index + 1;
+        if (index % 2 == 0)
+            continue;
+        sum = sum + adjust(index);
+        if (sum > 25)
+            break;
+    }
+    return sum;
+}
