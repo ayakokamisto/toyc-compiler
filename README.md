@@ -21,12 +21,10 @@ Lexer, Parser, Sema, contract IR generation, IR verification, and the RISC-V32 b
 
 ### 开发中 / In Development
 
-- **端到端功能测试（M5）**: 当前已验证到 RISC-V32 汇编文本生成；待 RISC-V GCC + QEMU 环境接入后执行汇编、链接、运行和退出码比对
-- **IR 文档收敛**: 当前后端输入为 `ContractIR`；`src/ir/ir.h` 的旧结构 IR 仍保留但不是当前后端入口
-- **优化边界**: `-opt` 已由后端消费；如需 IR 层优化，需与后端优化边界继续协调
-- **实践报告**: 待编写
+- **实践报告**: 待最终整理
+- **后续优化**: 当前 `-opt` 已完成课程项目第一版优化；更复杂的 interval splitting、copy coalescing、IR 层 CSE/DCE 可作为后续增强，不作为当前交付阻塞项
 
-The default `toycc` path now connects the completed frontend/Sema/IR/backend modules inside `src/driver/main.cpp`. Interface contracts are defined in `docs/contracts/`.
+The default `toycc` path now connects the completed frontend/Sema/IR/backend modules inside `src/driver/main.cpp`. Interface contracts are defined in `docs/contracts/`. End-to-end RISC-V execution tests are available through an opt-in CTest target when the RISC-V toolchain and QEMU are installed.
 
 ### 当前行为 / Current Behavior
 
@@ -34,10 +32,17 @@ The default `toycc` path now connects the completed frontend/Sema/IR/backend mod
 - 成功：完整汇编输出到 stdout，exit 0
 - 失败：诊断信息输出到 stderr，stdout 为空，exit 1
 - `--dump-tokens`：Lexer 后输出 token 到 stderr 并返回 0，不进入后续阶段
-- `-opt`：传递给后端 `BackendOptions.enableOpt`，启用 peephole 优化
+- `-opt`：传递给后端 `BackendOptions.enableOpt`，启用后端优化路径
 - 语义分析输入边界见 `docs/contracts/sema-input-contract.md`
 - IR/后端边界见 `docs/contracts/ir-contract.md` 与 `docs/contracts/ir_backend_contract.md`
 - 集成回归规格位于 `tests/integration/cases/`
+
+当前已验证：
+
+- 默认 CTest：46/46 通过
+- 开启 `TOYC_ENABLE_RISCV_EXEC_TESTS=ON` 后：47/47 通过
+- ToyC 源码级执行闭环：17 个 case 的 default/`-opt` 共 34/34 通过
+- `-opt` 度量基线：`mv` 从 455 降到 74，17/17 case 的 `lw` 下降，`lw+sw increases: none`
 
 ## 构建与测试 / Build and Test
 
@@ -59,6 +64,24 @@ Windows MSYS2/MinGW 环境需指定生成器 / On Windows with MSYS2/MinGW, spec
 ```powershell
 cmake -S . -B build -G "MinGW Makefiles"
 ```
+
+推荐的 Ninja 验证命令 / Recommended Ninja validation:
+
+```bash
+cmake -S . -B build -G Ninja
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+RISC-V 执行验证需要额外安装 `riscv64-linux-gnu-gcc` 与 `qemu-riscv32`。在 WSL/Unix 环境中可开启可选 CTest：
+
+```bash
+cmake -S . -B build -G Ninja -DTOYC_ENABLE_RISCV_EXEC_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+该模式会注册 `toycc_riscv_exec_cases`，对 `tests/integration/cases/*.tc` 执行 default 和 `-opt` 两种编译模式，汇编、链接、运行并比较 `.expected` 中的 `main` 退出码。
 
 ### 使用示例 / Usage Examples
 
@@ -82,10 +105,17 @@ echo "int main() { return 0; }" | ./build/toycc --dump-tokens
 Get-Content program.tc | .\build\toycc.exe --dump-tokens
 ```
 
-开启优化（传递给后端启用 peephole 优化）:
+开启优化（传递给后端启用后端优化路径）:
 
 ```bash
 echo "int main() { return 0; }" | ./build/toycc -opt
+```
+
+源码级执行闭环也可以手动运行：
+
+```bash
+bash tests/integration/run_toyc_exec_cases.sh --build-dir build
+python3 tests/integration/measure_codegen_opt.py --build-dir build
 ```
 
 ### 输出约定 / Output Convention
@@ -116,14 +146,13 @@ src/
 │   └── ir.h             旧结构 IR 声明（当前非后端输入）
 ├── sema/            语义分析（符号表、作用域、常量求值）
 ├── codegen/         RISC-V32 代码生成
-│   ├── RiscvBackend        后端入口
-│   ├── RiscvEmitter        汇编指令发射
-│   ├── StackFrame          栈帧布局
-│   ├── CallingConvention   调用约定
-│   ├── InstructionSelector IR→RISC-V 指令选择
-│   ├── VRegCollector       虚拟寄存器收集
-│   ├── FunctionEmitter     函数体发射
-│   └── ContractIR          后端自有 IR 中间表示
+│   ├── RiscvBackend.*      后端入口
+│   ├── ContractIR.h        后端消费的契约 IR 视图
+│   ├── emit/               汇编文本发射
+│   ├── frame/              栈帧、vreg 分析、linear-scan 分配
+│   ├── abi/                RISC-V32 调用约定
+│   ├── lower/              函数发射、指令选择、branch fusion、vreg cache
+│   └── opt/                peephole 优化
 └── driver/          编译器入口
     └── main.cpp         主程序入口和命令行参数处理
 tests/
@@ -139,9 +168,11 @@ tests/
 │   ├── sema_analysis_tests.cpp
 │   └── codegen_vreg_collector_tests.cpp
 └── integration/     端到端集成测试
-    ├── cases/           ToyC 测试用例（.tc 文件，12 组）
+    ├── cases/           ToyC 测试用例（.tc 文件，17 组）
     ├── driver/          Driver 集成测试
     ├── codegen_snapshot_tests.cpp
+    ├── run_toyc_exec_cases.sh
+    ├── measure_codegen_opt.py
     └── driver_test.cmake
 docs/
 ├── contracts/       接口契约文档
@@ -187,8 +218,8 @@ Interface changes must be submitted together with the corresponding header and c
 | M2 | Sema（语义分析） | ✅ 已完成模块实现与单元测试 |
 | M3 | IR + CFG（中间表示） | ✅ Contract IR 生成器与 verifier 已完成模块实现 |
 | M4 | RISC-V32 CodeGen | ✅ 已接入 Driver 全链路 |
-| M5 | 端到端功能测试 | ⏳ 待 RISC-V 工具链环境接入 |
-| M6 | `-opt` 性能优化 | 🔧 后端已有优化路径，IR 层优化待协调 |
+| M5 | 端到端功能测试 | ✅ 已完成源码级 assemble/link/run/exit-code 验证，并可选接入 CTest |
+| M6 | `-opt` 性能优化 | ✅ 后端优化第一版已完成，具备度量脚本与基线数据 |
 
 ### 编译器主链路 / Compiler Pipeline
 
@@ -197,7 +228,7 @@ stdin → Lexer → Parser → Sema → ContractIRGenerator → verifyContractMo
          ✅       ✅      ✅            ✅                    ✅              ✅
 ```
 
-Driver 全链路已接线：stdin → Lexer → Parser → Sema → ContractIRGenerator → verifyContractModule → RISC-V32 CodeGen → stdout。成功输出汇编并 exit 0；失败输出诊断到 stderr 并 exit 1。
+Driver 全链路已接线：stdin → Lexer → Parser → Sema → ContractIRGenerator → verifyContractModule → RISC-V32 CodeGen → stdout。成功输出汇编并 exit 0；失败输出诊断到 stderr 并 exit 1。开启 `TOYC_ENABLE_RISCV_EXEC_TESTS=ON` 后，CTest 会额外运行 RISC-V GCC + QEMU 执行闭环，按 `.expected` 比较 `main` 返回值。
 
 ---
 
