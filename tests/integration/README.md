@@ -30,5 +30,14 @@ cmake --build build --target toycc
 bash tests/integration/run_toyc_exec_cases.sh --build-dir build
 ```
 
+`-opt` codegen measurement:
+
+```bash
+python3 tests/integration/measure_codegen_opt.py --build-dir build
+```
+
+Use `--no-run` to generate only the default/`-opt` assembly statistics without
+requiring the RISC-V GCC and `qemu-riscv32` execution chain.
+
 Function calls follow ToyC source-order rules: a callee is defined before its caller;
 self-recursion is permitted.

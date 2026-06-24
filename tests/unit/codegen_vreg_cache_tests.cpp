@@ -1,4 +1,8 @@
 #include "codegen/RiscvBackend.h"
+#include "codegen/emit/RiscvEmitter.h"
+#include "codegen/frame/StackFrame.h"
+#include "codegen/frame/VRegAssignment.h"
+#include "codegen/lower/InstructionSelector.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -60,8 +64,9 @@ void testOptReusesCachedVRegForDuplicateOperands() {
     const std::size_t optimizedLoads = countSubstring(optimized, "    lw ");
     require(optimizedLoads < baselineLoads,
             "-opt should emit fewer stack loads when both operands are the same vreg");
-    require(optimized.find("    mv t1, t0\n") != std::string::npos,
-            "duplicate operand should reuse cached register with mv");
+    require(optimized.find("    mv t1, t0\n") != std::string::npos ||
+                optimized.find("    add s") != std::string::npos,
+            "duplicate operand should reuse a cached register or direct physical register");
 }
 
 void testOptConstOneUsesAddi() {
@@ -84,7 +89,8 @@ void testOptConstOneUsesAddi() {
     toyc::codegen::BackendOptions options;
     options.enableOpt = true;
     const std::string assembly = toyc::codegen::RiscvBackend().generate(module, options);
-    require(assembly.find("    addi t0, zero, 1\n") != std::string::npos,
+    require(assembly.find("    addi ") != std::string::npos &&
+                assembly.find(", zero, 1\n") != std::string::npos,
             "CONST 1 should use addi under -opt");
     require(assembly.find("    li t0, 1\n") == std::string::npos,
             "CONST 1 should not emit li under -opt");
@@ -135,11 +141,55 @@ void testCallInvalidatesBlockCache() {
     const bool usesPhysicalReload =
         mainBody.find("    mv t0, s1\n") != std::string::npos ||
         mainBody.find("    mv t1, s1\n") != std::string::npos;
-    require(loadsAfterCall == 1 || usesPhysicalReload,
-            "after call, duplicate-operand add must reload from stack or callee-saved register");
+    const bool usesDirectPhysicalAdd = mainBody.find("    add s") != std::string::npos;
+    require(loadsAfterCall == 1 || usesPhysicalReload || usesDirectPhysicalAdd,
+            "after call, duplicate-operand add must reload or use a callee-saved register");
     require(mainBody.find("    mv t1, t0\n") != std::string::npos ||
-                mainBody.find("    mv t1, s1\n") != std::string::npos,
-            "second duplicate operand after call should reuse via mv");
+                mainBody.find("    mv t1, s1\n") != std::string::npos || usesDirectPhysicalAdd,
+            "second duplicate operand after call should reuse via mv or direct physical add");
+}
+
+void testOptCopyLoadsStackSourceDirectlyIntoPhysicalDestination() {
+    toyc::codegen::StackFrame frame;
+    frame.addVReg("%src");
+    frame.finalize();
+
+    toyc::codegen::VRegAssignment assignment;
+    assignment.assignPhysical("%dst", "s1");
+
+    toyc::codegen::RiscvEmitter emitter;
+    toyc::codegen::InstructionSelector selector(emitter, frame, assignment, true);
+    selector.emit(toyc::codegen::contract::CopyInst{"%dst", "%src"});
+
+    const std::string assembly = emitter.str();
+    require(assembly.find("    lw s1, -12(s0)\n") != std::string::npos,
+            "COPY to physical destination should load stack source directly into that register");
+    require(assembly.find("    lw t0, -12(s0)\n") == std::string::npos,
+            "COPY to physical destination should not load through t0");
+    require(assembly.find("    mv s1, t0\n") == std::string::npos,
+            "COPY to physical destination should not move from t0 after loading");
+}
+
+void testOptPhysicalBinaryOpUsesAssignedRegistersDirectly() {
+    toyc::codegen::StackFrame frame;
+    frame.finalize();
+
+    toyc::codegen::VRegAssignment assignment;
+    assignment.assignPhysical("%lhs", "s1");
+    assignment.assignPhysical("%rhs", "s2");
+    assignment.assignPhysical("%dst", "s3");
+
+    toyc::codegen::RiscvEmitter emitter;
+    toyc::codegen::InstructionSelector selector(emitter, frame, assignment, true);
+    selector.emit(toyc::codegen::contract::AddInst{"%dst", "%lhs", "%rhs"});
+
+    const std::string assembly = emitter.str();
+    require(assembly == "    add s3, s1, s2\n",
+            "ADD with physical src/dst should emit a direct three-address instruction");
+    require(assembly.find("    mv t0, s1\n") == std::string::npos,
+            "direct physical ADD should not move lhs through t0");
+    require(assembly.find("    mv s3, t0\n") == std::string::npos,
+            "direct physical ADD should not move result back from t0");
 }
 
 } // namespace
@@ -149,6 +199,8 @@ int main() {
         testOptReusesCachedVRegForDuplicateOperands();
         testOptConstOneUsesAddi();
         testCallInvalidatesBlockCache();
+        testOptCopyLoadsStackSourceDirectlyIntoPhysicalDestination();
+        testOptPhysicalBinaryOpUsesAssignedRegistersDirectly();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 1;

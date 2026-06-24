@@ -40,6 +40,121 @@ void InstructionSelector::storeVReg(std::string_view vreg, std::string_view reg)
     abi_.storeVReg(vreg, reg);
 }
 
+std::optional<std::string_view> InstructionSelector::physicalReg(std::string_view vreg) const {
+    if (!enableOpt_) {
+        return std::nullopt;
+    }
+    return assignment_.physicalReg(vreg);
+}
+
+bool InstructionSelector::tryEmitPhysicalBinaryOp(std::string_view dst,
+                                                  std::string_view src1,
+                                                  std::string_view src2,
+                                                  std::string_view mnemonic) {
+    const std::optional<std::string_view> dstPhys = physicalReg(dst);
+    const std::optional<std::string_view> src1Phys = physicalReg(src1);
+    const std::optional<std::string_view> src2Phys = physicalReg(src2);
+    if (!dstPhys.has_value() || !src1Phys.has_value() || !src2Phys.has_value()) {
+        return false;
+    }
+
+    emitter_.instruction(std::string(mnemonic), {*dstPhys, *src1Phys, *src2Phys});
+    vregCache_.forgetVReg(dst);
+    return true;
+}
+
+bool InstructionSelector::tryEmitPhysicalCompareOp(std::string_view dst,
+                                                   std::string_view src1,
+                                                   std::string_view src2,
+                                                   std::string_view compareKind) {
+    const std::optional<std::string_view> dstPhys = physicalReg(dst);
+    const std::optional<std::string_view> src1Phys = physicalReg(src1);
+    const std::optional<std::string_view> src2Phys = physicalReg(src2);
+    if (!dstPhys.has_value() || !src1Phys.has_value() || !src2Phys.has_value()) {
+        return false;
+    }
+
+    if (compareKind == "eq" || compareKind == "ne") {
+        emitter_.instruction("sub", {*dstPhys, *src1Phys, *src2Phys});
+        emitter_.instruction(compareKind == "eq" ? "seqz" : "snez", {*dstPhys, *dstPhys});
+    } else if (compareKind == "lt") {
+        emitter_.instruction("slt", {*dstPhys, *src1Phys, *src2Phys});
+    } else if (compareKind == "le") {
+        emitter_.instruction("slt", {*dstPhys, *src2Phys, *src1Phys});
+        emitter_.instruction("xori", {*dstPhys, *dstPhys, "1"});
+    } else if (compareKind == "gt") {
+        emitter_.instruction("slt", {*dstPhys, *src2Phys, *src1Phys});
+    } else if (compareKind == "ge") {
+        emitter_.instruction("slt", {*dstPhys, *src1Phys, *src2Phys});
+        emitter_.instruction("xori", {*dstPhys, *dstPhys, "1"});
+    } else {
+        return false;
+    }
+
+    vregCache_.forgetVReg(dst);
+    return true;
+}
+
+bool InstructionSelector::tryEmitPhysicalUnaryOp(std::string_view dst,
+                                                 std::string_view src,
+                                                 std::string_view mnemonic) {
+    const std::optional<std::string_view> dstPhys = physicalReg(dst);
+    if (!dstPhys.has_value()) {
+        return false;
+    }
+
+    if (const std::optional<std::string_view> srcPhys = physicalReg(src)) {
+        if (mnemonic == "neg") {
+            emitter_.instruction("sub", {*dstPhys, "zero", *srcPhys});
+        } else if (mnemonic == "lnot") {
+            emitter_.instruction("seqz", {*dstPhys, *srcPhys});
+        } else {
+            return false;
+        }
+        vregCache_.forgetVReg(dst);
+        return true;
+    }
+
+    loadVReg(*dstPhys, src);
+    if (mnemonic == "neg") {
+        emitter_.instruction("sub", {*dstPhys, "zero", *dstPhys});
+    } else if (mnemonic == "lnot") {
+        emitter_.instruction("seqz", {*dstPhys, *dstPhys});
+    } else {
+        return false;
+    }
+    vregCache_.forgetVReg(dst);
+    return true;
+}
+
+bool InstructionSelector::tryEmitPhysicalConst(std::string_view dst, const int value) {
+    const std::optional<std::string_view> dstPhys = physicalReg(dst);
+    if (!dstPhys.has_value()) {
+        return false;
+    }
+
+    if (value == 0 || value == 1) {
+        emitter_.instruction("addi", {*dstPhys, "zero", imm(value)});
+    } else {
+        emitter_.instruction("li", {*dstPhys, imm(value)});
+    }
+    vregCache_.forgetVReg(dst);
+    return true;
+}
+
+bool InstructionSelector::tryEmitPhysicalLoadGlobal(std::string_view dst, std::string_view name) {
+    const std::optional<std::string_view> dstPhys = physicalReg(dst);
+    if (!dstPhys.has_value()) {
+        return false;
+    }
+
+    emitter_.instruction("la", {"t0", globalLabel(name)});
+    emitter_.instruction("lw", {*dstPhys, offsetReg(0, "t0")});
+    vregCache_.clobberRegister("t0");
+    vregCache_.forgetVReg(dst);
+    return true;
+}
+
 void InstructionSelector::emitBinaryInputs(std::string_view src1, std::string_view src2) {
     loadVReg("t0", src1);
     loadVReg("t1", src2);
@@ -49,6 +164,10 @@ void InstructionSelector::emitBinaryOp(std::string_view dst,
                                        std::string_view src1,
                                        std::string_view src2,
                                        std::string_view mnemonic) {
+    if (tryEmitPhysicalBinaryOp(dst, src1, src2, mnemonic)) {
+        return;
+    }
+
     emitBinaryInputs(src1, src2);
     vregCache_.clobberRegister("t0");
     emitter_.instruction(mnemonic, {"t0", "t0", "t1"});
@@ -70,6 +189,9 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
         [&](const auto& inst) {
             using Inst = std::decay_t<decltype(inst)>;
             if constexpr (std::is_same_v<Inst, contract::ConstInst>) {
+                if (tryEmitPhysicalConst(inst.dst, inst.value)) {
+                    return;
+                }
                 if (enableOpt_ && inst.value == 0) {
                     if (const std::optional<std::string_view> physReg =
                             assignment_.physicalReg(inst.dst)) {
@@ -92,14 +214,28 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 if (enableOpt_) {
                     const std::optional<std::string_view> srcPhys =
                         assignment_.physicalReg(inst.src);
+                    const std::optional<std::string_view> dstPhys =
+                        assignment_.physicalReg(inst.dst);
+                    if (srcPhys.has_value() && dstPhys.has_value() && *srcPhys == *dstPhys) {
+                        vregCache_.forgetVReg(inst.dst);
+                        return;
+                    }
                     if (srcPhys.has_value()) {
                         storeVReg(inst.dst, *srcPhys);
+                        return;
+                    }
+                    if (dstPhys.has_value()) {
+                        loadVReg(*dstPhys, inst.src);
+                        vregCache_.forgetVReg(inst.dst);
                         return;
                     }
                 }
                 loadVReg("t0", inst.src);
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::LoadGlobalInst>) {
+                if (tryEmitPhysicalLoadGlobal(inst.dst, inst.name)) {
+                    return;
+                }
                 emitter_.instruction("la", {"t0", globalLabel(inst.name)});
                 emitter_.instruction("lw", {"t1", offsetReg(0, "t0")});
                 vregCache_.clobberRegister("t0");
@@ -135,42 +271,65 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
             } else if constexpr (std::is_same_v<Inst, contract::ModInst>) {
                 emitBinaryOp(inst.dst, inst.src1, inst.src2, "rem");
             } else if constexpr (std::is_same_v<Inst, contract::NegInst>) {
+                if (tryEmitPhysicalUnaryOp(inst.dst, inst.src, "neg")) {
+                    return;
+                }
                 loadVReg("t0", inst.src);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("sub", {"t0", "zero", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::EqInst>) {
+                if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "eq")) {
+                    return;
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("sub", {"t0", "t0", "t1"});
                 emitter_.instruction("seqz", {"t0", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::NeInst>) {
+                if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "ne")) {
+                    return;
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("sub", {"t0", "t0", "t1"});
                 emitter_.instruction("snez", {"t0", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::LtInst>) {
-                emitBinaryOp(inst.dst, inst.src1, inst.src2, "slt");
+                if (!tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "lt")) {
+                    emitBinaryOp(inst.dst, inst.src1, inst.src2, "slt");
+                }
             } else if constexpr (std::is_same_v<Inst, contract::LeInst>) {
+                if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "le")) {
+                    return;
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("slt", {"t0", "t1", "t0"});
                 emitter_.instruction("xori", {"t0", "t0", "1"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::GtInst>) {
+                if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "gt")) {
+                    return;
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("slt", {"t0", "t1", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::GeInst>) {
+                if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "ge")) {
+                    return;
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("slt", {"t0", "t0", "t1"});
                 emitter_.instruction("xori", {"t0", "t0", "1"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::LNotInst>) {
+                if (tryEmitPhysicalUnaryOp(inst.dst, inst.src, "lnot")) {
+                    return;
+                }
                 loadVReg("t0", inst.src);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("seqz", {"t0", "t0"});

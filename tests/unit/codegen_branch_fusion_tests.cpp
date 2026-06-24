@@ -64,6 +64,10 @@ void testFusionRunsAfterEarlierBlockInstructions() {
         if (addiPos != std::string::npos) {
             return addiPos;
         }
+        const std::size_t physicalAddiPos = assembly.find(", zero, 1\n");
+        if (physicalAddiPos != std::string::npos) {
+            return physicalAddiPos;
+        }
         return assembly.find("    li t0, 1\n");
     }();
     const std::size_t fusedCompare = assembly.find("    slt t0, t0, t1\n    bnez t0, main__then_0\n");
@@ -94,7 +98,7 @@ void testFusionSkippedWhenCondUsedInTargetBlock() {
         toyc::codegen::RiscvBackend().generate(liveCondModule, options);
     require(assembly.find("    slt t0, t0, t1\n    bnez t0, main__then_0\n") == std::string::npos,
             "fusion is disabled when branch cond is read by a successor block");
-    require(assembly.find("    slt t0, t0, t1\n") != std::string::npos,
+    require(assembly.find("    slt ") != std::string::npos,
             "compare is still materialized without fusion");
 }
 
@@ -148,7 +152,7 @@ void testFusionSkippedWhenCondUsedInReachableJoinBlock() {
             "fusion is disabled when branch cond is read after target successors");
     require(assembly.find("main__join_0:\n") != std::string::npos,
             "join block is emitted");
-    require(assembly.find("    slt t0, t0, t1\n") != std::string::npos,
+    require(assembly.find("    slt ") != std::string::npos,
             "compare result is materialized for the later join block read");
 }
 

@@ -6,6 +6,7 @@
 #include "codegen/frame/VRegAssignment.h"
 #include "codegen/lower/BlockVRegCache.h"
 
+#include <optional>
 #include <string_view>
 
 namespace toyc::codegen {
@@ -32,6 +33,20 @@ public:
 private:
     void loadVReg(std::string_view reg, std::string_view vreg);
     void storeVReg(std::string_view vreg, std::string_view reg);
+    [[nodiscard]] std::optional<std::string_view> physicalReg(std::string_view vreg) const;
+    [[nodiscard]] bool tryEmitPhysicalBinaryOp(std::string_view dst,
+                                               std::string_view src1,
+                                               std::string_view src2,
+                                               std::string_view mnemonic);
+    [[nodiscard]] bool tryEmitPhysicalCompareOp(std::string_view dst,
+                                                std::string_view src1,
+                                                std::string_view src2,
+                                                std::string_view compareKind);
+    [[nodiscard]] bool tryEmitPhysicalUnaryOp(std::string_view dst,
+                                              std::string_view src,
+                                              std::string_view mnemonic);
+    [[nodiscard]] bool tryEmitPhysicalConst(std::string_view dst, int value);
+    [[nodiscard]] bool tryEmitPhysicalLoadGlobal(std::string_view dst, std::string_view name);
     void emitBinaryInputs(std::string_view src1, std::string_view src2);
     void emitBinaryOp(std::string_view dst,
                       std::string_view src1,
