@@ -265,6 +265,7 @@ if(TOYC_ENABLE_RISCV_EXEC_TESTS)
     find_program(TOYC_BASH_EXECUTABLE bash)
     find_program(TOYC_RISCV_GCC_EXECUTABLE riscv64-linux-gnu-gcc)
     find_program(TOYC_QEMU_RISCV32_EXECUTABLE qemu-riscv32)
+    find_program(TOYC_TIMEOUT_EXECUTABLE timeout)
 
     if(NOT TOYC_BASH_EXECUTABLE)
         message(FATAL_ERROR
@@ -284,6 +285,23 @@ if(TOYC_ENABLE_RISCV_EXEC_TESTS)
             "TOYC_ENABLE_RISCV_EXEC_TESTS=ON requires qemu-riscv32 in PATH.")
     endif()
 
+    if(NOT TOYC_TIMEOUT_EXECUTABLE)
+        message(FATAL_ERROR
+            "TOYC_ENABLE_RISCV_EXEC_TESTS=ON requires timeout in PATH.")
+    endif()
+
+    execute_process(
+        COMMAND "${TOYC_TIMEOUT_EXECUTABLE}" --version
+        RESULT_VARIABLE TOYC_TIMEOUT_VERSION_RESULT
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(NOT TOYC_TIMEOUT_VERSION_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "TOYC_ENABLE_RISCV_EXEC_TESTS=ON requires a GNU/coreutils-compatible "
+            "timeout executable.")
+    endif()
+
     if(WIN32)
         message(WARNING
             "RISC-V execution CTest is registered with a detected bash on Windows. "
@@ -295,9 +313,10 @@ if(TOYC_ENABLE_RISCV_EXEC_TESTS)
         NAME toycc_riscv_exec_cases
         COMMAND "${TOYC_BASH_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_toyc_exec_cases.sh"
-            --build-dir build
+            --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
             --compiler "${TOYC_RISCV_GCC_EXECUTABLE}"
             --runner "${TOYC_QEMU_RISCV32_EXECUTABLE}"
+            --timeout-tool "${TOYC_TIMEOUT_EXECUTABLE}"
     )
 endif()
 

@@ -35,6 +35,18 @@ cmake --build build --target toycc
 bash tests/integration/run_toyc_exec_cases.sh --build-dir build
 ```
 
+The script writes per-case logs under `<build-dir>/toyc-exec-cases/`:
+
+- `*.cmd`: command line
+- `*.stdout`: captured stdout
+- `*.stderr`: captured stderr
+- `*.exit`: process exit code
+
+`--timeout SECONDS` applies to each `toycc`, RISC-V GCC, and QEMU command.
+`--timeout-tool PATH` can pin the GNU/coreutils-compatible timeout executable used
+by the script. Failures are reported as command timeout, tool failure, QEMU
+startup failure, or target exit code mismatch.
+
 Optional CTest execution:
 
 ```bash
@@ -57,6 +69,10 @@ python3 tests/integration/measure_codegen_opt.py --build-dir build
 
 Use `--no-run` to generate only the default/`-opt` assembly statistics without
 requiring the RISC-V GCC and `qemu-riscv32` execution chain.
+
+Current reproducible static optimization metrics are based on `lw`, `sw`, and
+per-case `lw+sw`: 17/17 cases reduce `lw`, aggregate `lw` changes from 350 to
+238, aggregate `sw` changes from 330 to 304, and `lw+sw increases: none`.
 
 Function calls follow ToyC source-order rules: a callee is defined before its caller;
 self-recursion is permitted.

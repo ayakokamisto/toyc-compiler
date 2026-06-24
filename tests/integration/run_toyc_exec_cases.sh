@@ -5,8 +5,10 @@ build_dir="build"
 cases_dir=""
 compiler=""
 runner=""
+timeout_tool=""
 march="rv32im"
 mabi="ilp32"
+timeout_seconds=20
 opt_only=0
 default_only=0
 
@@ -19,8 +21,10 @@ Options:
   --cases-dir DIR     Directory containing *.tc and matching *.expected files.
   --compiler PATH     RISC-V Linux GCC. Default: riscv64-linux-gnu-gcc.
   --runner PATH       qemu-riscv32 runner. Default: qemu-riscv32.
+  --timeout-tool PATH timeout executable. Default: timeout.
   --march VALUE       GCC -march value. Default: rv32im.
   --mabi VALUE        GCC -mabi value. Default: ilp32.
+  --timeout SECONDS   Per-command timeout for toycc, GCC, and QEMU. Default: 20.
   --opt-only          Run only -opt mode.
   --default-only      Run only default mode.
   -h, --help          Show this help.
@@ -45,12 +49,20 @@ while [[ $# -gt 0 ]]; do
             runner="$2"
             shift 2
             ;;
+        --timeout-tool)
+            timeout_tool="$2"
+            shift 2
+            ;;
         --march)
             march="$2"
             shift 2
             ;;
         --mabi)
             mabi="$2"
+            shift 2
+            ;;
+        --timeout)
+            timeout_seconds="$2"
             shift 2
             ;;
         --opt-only)
@@ -75,6 +87,11 @@ done
 
 if [[ "$opt_only" -eq 1 && "$default_only" -eq 1 ]]; then
     echo "--opt-only and --default-only cannot be used together" >&2
+    exit 2
+fi
+
+if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid --timeout value: $timeout_seconds" >&2
     exit 2
 fi
 
@@ -104,13 +121,78 @@ resolve_tool() {
     exit 1
 }
 
+quote_command() {
+    printf '%q ' "$@"
+}
+
+write_command_log() {
+    local path="$1"
+    shift
+    quote_command "$@" >"$path"
+    printf '\n' >>"$path"
+}
+
+run_with_logs() {
+    local step="$1"
+    local stdin_path="$2"
+    local stdout_path="$3"
+    local stderr_path="$4"
+    local exit_path="$5"
+    local cmd_path="$6"
+    shift 6
+
+    write_command_log "$cmd_path" "$@"
+
+    set +e
+    if [[ -n "$stdin_path" ]]; then
+        "$timeout_tool" "$timeout_seconds" "$@" <"$stdin_path" >"$stdout_path" 2>"$stderr_path"
+    else
+        "$timeout_tool" "$timeout_seconds" "$@" >"$stdout_path" 2>"$stderr_path"
+    fi
+    local status=$?
+    set -e
+
+    printf '%s\n' "$status" >"$exit_path"
+    last_status="$status"
+    if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+        echo "TIMEOUT $step after ${timeout_seconds}s" >&2
+        echo "command log: $cmd_path" >&2
+        echo "stdout log: $stdout_path" >&2
+        echo "stderr log: $stderr_path" >&2
+        exit 1
+    fi
+    return 0
+}
+
+require_step_success() {
+    local step="$1"
+    local status="$2"
+    local cmd_path="$3"
+    local stdout_path="$4"
+    local stderr_path="$5"
+
+    if [[ "$status" -eq 0 ]]; then
+        return 0
+    fi
+
+    echo "FAIL $step exit=$status" >&2
+    echo "command log: $cmd_path" >&2
+    echo "stdout log: $stdout_path" >&2
+    echo "stderr log: $stderr_path" >&2
+    exit 1
+}
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-build_root="$repo_root/$build_dir"
+if [[ "$build_dir" == /* || "$build_dir" =~ ^[A-Za-z]:[\\/] ]]; then
+    build_root="$build_dir"
+else
+    build_root="$repo_root/$build_dir"
+fi
 
 if [[ -z "$cases_dir" ]]; then
     cases_dir="$script_dir/cases"
-elif [[ "$cases_dir" != /* ]]; then
+elif [[ "$cases_dir" != /* && ! "$cases_dir" =~ ^[A-Za-z]:[\\/] ]]; then
     cases_dir="$repo_root/$cases_dir"
 fi
 
@@ -126,6 +208,7 @@ fi
 
 cc="$(resolve_tool "$compiler" "compiler" riscv64-linux-gnu-gcc)"
 qemu="$(resolve_tool "$runner" "runner" qemu-riscv32)"
+timeout_tool="$(resolve_tool "$timeout_tool" "timeout" timeout)"
 
 work_dir="$build_root/toyc-exec-cases"
 mkdir -p "$work_dir"
@@ -181,16 +264,50 @@ for case_file in "${case_files[@]}"; do
 
         asm="$work_dir/$case_name-$suffix.s"
         elf="$work_dir/$case_name-$suffix.elf"
-        stderr_log="$work_dir/$case_name-$suffix.toycc.stderr"
+        toycc_stdout_log="$asm"
+        toycc_stderr_log="$work_dir/$case_name-$suffix.toycc.stderr"
+        toycc_exit_log="$work_dir/$case_name-$suffix.toycc.exit"
+        toycc_cmd_log="$work_dir/$case_name-$suffix.toycc.cmd"
+        gcc_stdout_log="$work_dir/$case_name-$suffix.gcc.stdout"
+        gcc_stderr_log="$work_dir/$case_name-$suffix.gcc.stderr"
+        gcc_exit_log="$work_dir/$case_name-$suffix.gcc.exit"
+        gcc_cmd_log="$work_dir/$case_name-$suffix.gcc.cmd"
+        qemu_stdout_log="$work_dir/$case_name-$suffix.qemu.stdout"
+        qemu_stderr_log="$work_dir/$case_name-$suffix.qemu.stderr"
+        qemu_exit_log="$work_dir/$case_name-$suffix.qemu.exit"
+        qemu_cmd_log="$work_dir/$case_name-$suffix.qemu.cmd"
 
         toycc_args=()
         if [[ -n "$mode" ]]; then
             toycc_args+=("$mode")
         fi
 
-        "$toycc" "${toycc_args[@]}" <"$case_file" >"$asm" 2>"$stderr_log"
+        run_with_logs \
+            "toycc $case_name $suffix" \
+            "$case_file" \
+            "$toycc_stdout_log" \
+            "$toycc_stderr_log" \
+            "$toycc_exit_log" \
+            "$toycc_cmd_log" \
+            "$toycc" "${toycc_args[@]}"
+        toycc_status="$last_status"
+        require_step_success \
+            "toycc $case_name $suffix" \
+            "$toycc_status" \
+            "$toycc_cmd_log" \
+            "$toycc_stdout_log" \
+            "$toycc_stderr_log"
 
-        "$cc" \
+        if [[ ! -s "$asm" ]]; then
+            echo "FAIL toycc $case_name $suffix generated empty assembly" >&2
+            echo "command log: $toycc_cmd_log" >&2
+            echo "stdout log: $toycc_stdout_log" >&2
+            echo "stderr log: $toycc_stderr_log" >&2
+            exit 1
+        fi
+
+        gcc_command=(
+            "$cc"
             "-march=$march" \
             "-mabi=$mabi" \
             -static \
@@ -199,21 +316,59 @@ for case_file in "${case_files[@]}"; do
             "$crt0" \
             "$asm" \
             -o "$elf"
+        )
+        run_with_logs \
+            "gcc $case_name $suffix" \
+            "" \
+            "$gcc_stdout_log" \
+            "$gcc_stderr_log" \
+            "$gcc_exit_log" \
+            "$gcc_cmd_log" \
+            "${gcc_command[@]}"
+        gcc_status="$last_status"
+        require_step_success \
+            "gcc $case_name $suffix" \
+            "$gcc_status" \
+            "$gcc_cmd_log" \
+            "$gcc_stdout_log" \
+            "$gcc_stderr_log"
 
-        set +e
-        "$qemu" "$elf"
-        actual=$?
-        set -e
+        if [[ ! -s "$elf" ]]; then
+            echo "FAIL gcc $case_name $suffix did not produce a non-empty ELF" >&2
+            echo "command log: $gcc_cmd_log" >&2
+            echo "stdout log: $gcc_stdout_log" >&2
+            echo "stderr log: $gcc_stderr_log" >&2
+            exit 1
+        fi
+
+        run_with_logs \
+            "qemu $case_name $suffix" \
+            "" \
+            "$qemu_stdout_log" \
+            "$qemu_stderr_log" \
+            "$qemu_exit_log" \
+            "$qemu_cmd_log" \
+            "$qemu" "$elf"
+        actual="$last_status"
 
         total=$((total + 1))
         if [[ "$actual" -ne "$expected" ]]; then
-            echo "FAIL $case_name $suffix expected exit=$expected got=$actual" >&2
+            if [[ -s "$qemu_stderr_log" || "$actual" -eq 126 || "$actual" -eq 127 ]]; then
+                echo "FAIL $case_name $suffix qemu startup failed exit=$actual expected_target_exit=$expected" >&2
+            else
+                echo "FAIL $case_name $suffix target exit mismatch expected=$expected actual=$actual" >&2
+            fi
+            echo "command log: $qemu_cmd_log" >&2
+            echo "stdout log: $qemu_stdout_log" >&2
+            echo "stderr log: $qemu_stderr_log" >&2
+            echo "exit log: $qemu_exit_log" >&2
             echo "assembly: $asm" >&2
             exit 1
         fi
 
         passed=$((passed + 1))
-        echo "PASS $case_name $suffix exit=$actual"
+        echo "PASS $case_name $suffix expected=$expected actual=$actual"
+        echo "logs $case_name $suffix toycc=[$toycc_cmd_log,$toycc_stdout_log,$toycc_stderr_log,$toycc_exit_log] gcc=[$gcc_cmd_log,$gcc_stdout_log,$gcc_stderr_log,$gcc_exit_log] qemu=[$qemu_cmd_log,$qemu_stdout_log,$qemu_stderr_log,$qemu_exit_log]"
     done
 done
 

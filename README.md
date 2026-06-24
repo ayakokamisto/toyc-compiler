@@ -42,7 +42,7 @@ The default `toycc` path now connects the completed frontend/Sema/IR/backend mod
 - 默认 CTest：46/46 通过
 - 开启 `TOYC_ENABLE_RISCV_EXEC_TESTS=ON` 后：47/47 通过
 - ToyC 源码级执行闭环：17 个 case 的 default/`-opt` 共 34/34 通过
-- `-opt` 度量基线：`mv` 从 455 降到 74，17/17 case 的 `lw` 下降，`lw+sw increases: none`
+- `-opt` 度量基线：17/17 case 的 `lw` 下降，汇总 `lw` 从 350 降到 238，汇总 `sw` 从 330 降到 304，`lw+sw increases: none`
 
 ## 构建与测试 / Build and Test
 
@@ -117,6 +117,9 @@ echo "int main() { return 0; }" | ./build/toycc -opt
 bash tests/integration/run_toyc_exec_cases.sh --build-dir build
 python3 tests/integration/measure_codegen_opt.py --build-dir build
 ```
+
+`run_toyc_exec_cases.sh` 会为每个 case 和模式保存 toycc、RISC-V GCC、QEMU
+的命令、stdout、stderr 和退出码日志，并用 `--timeout` 控制单条命令的最大运行时间。
 
 ### 输出约定 / Output Convention
 
