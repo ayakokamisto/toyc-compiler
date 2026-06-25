@@ -5,10 +5,13 @@
 #include "codegen/emit/RiscvEmitter.h"
 #include "codegen/frame/RegisterAllocator.h"
 #include "codegen/lower/BranchFusionAnalysis.h"
+#include "codegen/lower/FoldableConsts.h"
 #include "codegen/lower/InstructionSelector.h"
 
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <variant>
 
 namespace toyc::codegen {
@@ -21,13 +24,18 @@ void FunctionEmitter::emit(const contract::IRFunction& function) {
         throw std::invalid_argument("function must contain at least one basic block");
     }
 
+    std::unordered_map<std::string, std::int32_t> foldableConsts;
+    if (options_.enableOpt) {
+        foldableConsts = computeFoldableImmediateConsts(function);
+    }
+
     const RegisterAllocation allocation =
-        RegisterAllocator::allocate(function, options_.enableOpt);
+        RegisterAllocator::allocate(function, options_.enableOpt, foldableConsts);
 
     const std::string functionEpilogueLabel = epilogueLabel(function.name);
     CallingConvention abi(emitter_, allocation.frame, allocation.assignment);
     InstructionSelector selector(
-        emitter_, allocation.frame, allocation.assignment, options_.enableOpt);
+        emitter_, allocation.frame, allocation.assignment, options_.enableOpt, foldableConsts);
 
     if (options_.emitComment) {
         emitter_.comment("function " + function.name);

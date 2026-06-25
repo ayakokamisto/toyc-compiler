@@ -1,5 +1,6 @@
 #include "codegen/RiscvBackend.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -192,11 +193,14 @@ void testOptPhysicalCopyUsesRegisterMove() {
     const std::size_t bodyStart = assembly.find("sum_loop__while_body:");
     require(bodyStart != std::string::npos, "while body label");
     const std::string body = assembly.substr(bodyStart);
-    require(body.find("    mv s") != std::string::npos,
-            "hot vreg copy should move between callee-saved registers under -opt");
+    // No calls in this loop, so hot vregs live in caller-saved temps; the copy
+    // is a register-to-register move rather than a stack reload.
+    const std::size_t mvRegStart = std::min(body.find("    mv s"), body.find("    mv t"));
+    require(mvRegStart != std::string::npos,
+            "hot vreg copy should move between registers under -opt");
     require(body.find("    lw t0, -") == std::string::npos ||
-                body.find("    mv s") < body.find("    lw t0, -"),
-            "physical copy should not reload from stack before mv between s-regs");
+                mvRegStart < body.find("    lw t0, -"),
+            "physical copy should not reload from stack before the register move");
 }
 
 } // namespace

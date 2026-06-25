@@ -125,8 +125,11 @@ toyc::codegen::contract::IRFunction spillPrefersShorterIntervalFunction() {
 }
 
 toyc::codegen::contract::IRFunction loopWeightedPressureFunction() {
+    // Enough cold values to exceed the 16-register pool so the loop-weighted
+    // hot value must win a register over some cold value.
+    constexpr int kColdCount = 20;
     std::vector<toyc::codegen::contract::Instruction> entryInstructions;
-    for (int i = 0; i < 11; ++i) {
+    for (int i = 0; i < kColdCount; ++i) {
         entryInstructions.push_back(
             toyc::codegen::contract::ConstInst{"%cold" + std::to_string(i), i + 1});
     }
@@ -134,7 +137,7 @@ toyc::codegen::contract::IRFunction loopWeightedPressureFunction() {
 
     std::vector<toyc::codegen::contract::Instruction> exitInstructions;
     exitInstructions.push_back(toyc::codegen::contract::AddInst{"%ret", "%hot", "%cold0"});
-    for (int i = 1; i < 11; ++i) {
+    for (int i = 1; i < kColdCount; ++i) {
         exitInstructions.push_back(
             toyc::codegen::contract::AddInst{"%ret", "%ret", "%cold" + std::to_string(i)});
     }
@@ -172,9 +175,11 @@ toyc::codegen::contract::IRFunction callCrossingPressureFunction() {
     std::vector<toyc::codegen::contract::Instruction> instructions;
     instructions.push_back(toyc::codegen::contract::ConstInst{"%keep", 42});
 
+    // Enough simultaneously-live args to exceed the 16-register pool (t2-t6 +
+    // s1-s11), forcing the linear scan to spill.
     std::vector<std::string> args;
-    args.reserve(12);
-    for (int i = 0; i < 12; ++i) {
+    args.reserve(20);
+    for (int i = 0; i < 20; ++i) {
         const std::string vreg = "%arg" + std::to_string(i);
         instructions.push_back(toyc::codegen::contract::ConstInst{vreg, i});
         args.push_back(vreg);
@@ -241,18 +246,22 @@ void testOptAssignsLiveIntervalsToCalleeSaved() {
 
     const auto iReg = allocation.assignment.physicalReg("%i");
     const auto sumReg = allocation.assignment.physicalReg("%sum");
-    require(iReg.has_value(), "loop counter should receive a callee-saved register under -opt");
-    require(sumReg.has_value(), "accumulator should receive a callee-saved register under -opt");
+    require(iReg.has_value(), "loop counter should receive a register under -opt");
+    require(sumReg.has_value(), "accumulator should receive a register under -opt");
     require(!allocation.frame.containsVReg("%i"), "hot vreg should not keep a stack slot");
     require(!allocation.frame.containsVReg("%sum"), "hot vreg should not keep a stack slot");
 
-    bool sawS1 = false;
+    // These vregs never cross a call, so they should use caller-saved temps
+    // (t2-t6), which need no prologue/epilogue save.
+    auto isCallerSaved = [](std::string_view reg) {
+        return reg == "t2" || reg == "t3" || reg == "t4" || reg == "t5" || reg == "t6";
+    };
+    require(isCallerSaved(*iReg) && isCallerSaved(*sumReg),
+            "non-call-crossing hot vregs should use caller-saved temporaries");
     for (const toyc::codegen::SavedRegisterSlot& slot : allocation.frame.savedRegisterSlots()) {
-        if (slot.reg == "s1" || slot.reg == "s2") {
-            sawS1 = true;
-        }
+        require(slot.reg[0] != 's' || slot.reg == "s0",
+                "no s1-s11 callee-saved register should be saved when only caller-saved temps are used");
     }
-    require(sawS1, "frame prologue should save assigned callee-saved registers");
 }
 
 void testLinearScanKeepsCallCrossingIntervalUnderPressure() {
@@ -282,7 +291,7 @@ void testLinearScanCostModelKeepsLoopHotInterval() {
             "loop-weighted hot interval should receive a register under pressure");
 
     int spilledColdCount = 0;
-    for (int i = 0; i < 11; ++i) {
+    for (int i = 0; i < 20; ++i) {
         const std::string vreg = "%cold" + std::to_string(i);
         if (!allocation.assignment.physicalReg(vreg).has_value() &&
             allocation.frame.containsVReg(vreg)) {
@@ -297,15 +306,19 @@ void testProfitabilityFilterKeepsColdSingleUseIntervalsOnStack() {
     const toyc::codegen::RegisterAllocation allocation =
         toyc::codegen::RegisterAllocator::allocate(pressureFunction(), true);
 
-    int physicalInputCount = 0;
-    int stackInputCount = 0;
+    auto isCallerSaved = [](std::string_view reg) {
+        return reg == "t2" || reg == "t3" || reg == "t4" || reg == "t5" || reg == "t6";
+    };
+
+    int calleeSavedInputCount = 0;
     for (int i = 0; i < 12; ++i) {
         const std::string vreg = "%v" + std::to_string(i);
-        if (allocation.assignment.physicalReg(vreg).has_value()) {
-            ++physicalInputCount;
-        }
-        if (allocation.frame.containsVReg(vreg)) {
-            ++stackInputCount;
+        if (const auto reg = allocation.assignment.physicalReg(vreg)) {
+            // Cold single-use inputs may only use free caller-saved temps,
+            // never a callee-saved register (which would cost save/restore).
+            if (!isCallerSaved(*reg)) {
+                ++calleeSavedInputCount;
+            }
         }
     }
 
@@ -318,9 +331,8 @@ void testProfitabilityFilterKeepsColdSingleUseIntervalsOnStack() {
 
     require(allocation.assignment.physicalReg("%acc").has_value(),
             "cost model should keep high-access accumulator in a register");
-    require(physicalInputCount == 0,
-            "single-use cold input intervals should not pay callee-saved save/restore cost");
-    require(stackInputCount == 12, "single-use cold inputs should keep stack slots");
+    require(calleeSavedInputCount == 0,
+            "single-use cold inputs should not pay callee-saved save/restore cost");
     require(assignedCalleeSavedSlots < 11,
             "profitability filter should avoid filling the full s1-s11 pool with cold values");
 }
@@ -329,10 +341,16 @@ void testProfitabilityFilterRejectsShortSingleUseInterval() {
     const toyc::codegen::RegisterAllocation allocation =
         toyc::codegen::RegisterAllocator::allocate(spillPrefersShorterIntervalFunction(), true);
 
-    require(!allocation.assignment.physicalReg("%short").has_value(),
-            "short single-use interval should stay on stack despite free registers");
-    require(allocation.frame.containsVReg("%short"),
-            "filtered short interval should keep a stack slot");
+    // A short single-use value never crosses a call, so it may use a free
+    // caller-saved temp, but it must never consume a callee-saved register
+    // (whose save/restore cost is not worth a single use).
+    auto isCallerSaved = [](std::string_view reg) {
+        return reg == "t2" || reg == "t3" || reg == "t4" || reg == "t5" || reg == "t6";
+    };
+    if (const auto shortReg = allocation.assignment.physicalReg("%short")) {
+        require(isCallerSaved(*shortReg),
+                "short single-use interval may only use a free caller-saved temp");
+    }
     require(allocation.assignment.physicalReg("%acc").has_value(),
             "repeated accumulator should still receive a register");
 }
@@ -345,10 +363,14 @@ void testOptEmitsCalleeSavedInAssembly() {
     options.enableOpt = true;
     const std::string assembly = toyc::codegen::RiscvBackend().generate(module, options);
 
-    require(assembly.find("    sw s1") != std::string::npos,
-            "generated assembly saves callee-saved s1 in prologue");
-    require(assembly.find("    mv a0, s") != std::string::npos,
-            "return path can move from callee-saved register");
+    // The hot loop has no calls, so its values live in caller-saved temps and
+    // the return path moves the accumulator from a register (no stack reload).
+    require(assembly.find("    mv a0, t") != std::string::npos ||
+                assembly.find("    mv a0, s") != std::string::npos,
+            "return path moves the accumulator from a register under -opt");
+    require(assembly.find("    li t0") == std::string::npos ||
+                assembly.find("    slti") != std::string::npos,
+            "the loop bound is compared via an immediate rather than a reloaded constant");
 }
 
 void testNonOptKeepsStackSlotsOnly() {

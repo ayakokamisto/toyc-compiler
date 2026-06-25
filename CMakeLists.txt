@@ -40,8 +40,10 @@ add_library(toyc_codegen
     src/codegen/frame/VRegAssignment.cpp
     src/codegen/lower/FunctionEmitter.cpp
     src/codegen/lower/BranchFusionAnalysis.cpp
+    src/codegen/lower/FoldableConsts.cpp
     src/codegen/frame/RegisterAllocator.cpp
     src/codegen/opt/PeepholeOptimizer.cpp
+    src/codegen/opt/IrOptimizer.cpp
 )
 
 target_include_directories(toyc_codegen
@@ -470,3 +472,12 @@ target_link_libraries(codegen_register_allocator_tests PRIVATE toyc_codegen)
 toyc_apply_warnings(codegen_register_allocator_tests)
 
 add_test(NAME codegen_register_allocator_tests COMMAND codegen_register_allocator_tests)
+
+add_executable(ir_optimizer_tests
+    tests/unit/ir_optimizer_tests.cpp
+)
+
+target_link_libraries(ir_optimizer_tests PRIVATE toyc_ir toyc_codegen)
+toyc_apply_warnings(ir_optimizer_tests)
+
+add_test(NAME ir_optimizer_tests COMMAND ir_optimizer_tests)

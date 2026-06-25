@@ -1,0 +1,368 @@
+#include "codegen/opt/IrOptimizer.h"
+
+#include "codegen/frame/VRegAnalysis.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <unordered_map>
+#include <variant>
+#include <vector>
+
+namespace toyc::codegen {
+
+namespace {
+
+namespace c = contract;
+
+using ConstMap = std::unordered_map<std::string, std::int32_t>;
+using CopyMap = std::unordered_map<std::string, std::string>;
+
+std::int32_t wrapAdd(std::int32_t a, std::int32_t b) {
+    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) + static_cast<std::uint32_t>(b));
+}
+std::int32_t wrapSub(std::int32_t a, std::int32_t b) {
+    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b));
+}
+std::int32_t wrapMul(std::int32_t a, std::int32_t b) {
+    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) * static_cast<std::uint32_t>(b));
+}
+
+// Returns the destination vreg an instruction defines, or empty if none.
+std::string defOf(const c::Instruction& inst) {
+    return std::visit(
+        [](const auto& i) -> std::string {
+            using T = std::decay_t<decltype(i)>;
+            if constexpr (std::is_same_v<T, c::ConstInst> || std::is_same_v<T, c::CopyInst> ||
+                          std::is_same_v<T, c::LoadGlobalInst> || std::is_same_v<T, c::CallInst> ||
+                          std::is_same_v<T, c::AddInst> || std::is_same_v<T, c::SubInst> ||
+                          std::is_same_v<T, c::MulInst> || std::is_same_v<T, c::DivInst> ||
+                          std::is_same_v<T, c::ModInst> || std::is_same_v<T, c::NegInst> ||
+                          std::is_same_v<T, c::EqInst> || std::is_same_v<T, c::NeInst> ||
+                          std::is_same_v<T, c::LtInst> || std::is_same_v<T, c::LeInst> ||
+                          std::is_same_v<T, c::GtInst> || std::is_same_v<T, c::GeInst> ||
+                          std::is_same_v<T, c::LNotInst>) {
+                return i.dst;
+            } else {
+                return std::string{};
+            }
+        },
+        inst);
+}
+
+bool isPure(const c::Instruction& inst) {
+    return std::visit(
+        [](const auto& i) {
+            using T = std::decay_t<decltype(i)>;
+            return !(std::is_same_v<T, c::CallInst> || std::is_same_v<T, c::CallVoidInst> ||
+                     std::is_same_v<T, c::StoreGlobalInst>);
+        },
+        inst);
+}
+
+template <typename Fn>
+void forEachUse(c::Instruction& inst, Fn fn) {
+    std::visit(
+        [&](auto& i) {
+            using T = std::decay_t<decltype(i)>;
+            if constexpr (std::is_same_v<T, c::CopyInst> || std::is_same_v<T, c::StoreGlobalInst> ||
+                          std::is_same_v<T, c::NegInst> || std::is_same_v<T, c::LNotInst>) {
+                fn(i.src);
+            } else if constexpr (std::is_same_v<T, c::AddInst> || std::is_same_v<T, c::SubInst> ||
+                                 std::is_same_v<T, c::MulInst> || std::is_same_v<T, c::DivInst> ||
+                                 std::is_same_v<T, c::ModInst> || std::is_same_v<T, c::EqInst> ||
+                                 std::is_same_v<T, c::NeInst> || std::is_same_v<T, c::LtInst> ||
+                                 std::is_same_v<T, c::LeInst> || std::is_same_v<T, c::GtInst> ||
+                                 std::is_same_v<T, c::GeInst>) {
+                fn(i.src1);
+                fn(i.src2);
+            } else if constexpr (std::is_same_v<T, c::CallInst> ||
+                                 std::is_same_v<T, c::CallVoidInst>) {
+                for (std::string& arg : i.args) {
+                    fn(arg);
+                }
+            }
+        },
+        inst);
+}
+
+template <typename Fn>
+void forEachUse(c::Terminator& term, Fn fn) {
+    std::visit(
+        [&](auto& t) {
+            using T = std::decay_t<decltype(t)>;
+            if constexpr (std::is_same_v<T, c::BranchInst>) {
+                fn(t.cond);
+            } else if constexpr (std::is_same_v<T, c::ReturnInst>) {
+                if (t.src.has_value()) {
+                    fn(*t.src);
+                }
+            }
+        },
+        term);
+}
+
+std::string resolve(const CopyMap& copies, const std::string& name) {
+    std::string cur = name;
+    // Bounded chase; copy chains are short and acyclic by construction.
+    for (int i = 0; i < 64; ++i) {
+        const auto it = copies.find(cur);
+        if (it == copies.end()) {
+            break;
+        }
+        cur = it->second;
+    }
+    return cur;
+}
+
+// Drop all facts about a redefined vreg, including copies that pointed at it.
+void invalidateDef(const std::string& dst, ConstMap& consts, CopyMap& copies) {
+    consts.erase(dst);
+    copies.erase(dst);
+    for (auto it = copies.begin(); it != copies.end();) {
+        if (it->second == dst) {
+            it = copies.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+std::optional<std::int32_t> getConst(const ConstMap& consts, const std::string& name) {
+    const auto it = consts.find(name);
+    if (it == consts.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+std::optional<std::int32_t> foldBinary(std::string_view op, std::int32_t a, std::int32_t b) {
+    constexpr std::int32_t kMin = std::numeric_limits<std::int32_t>::min();
+    if (op == "add") return wrapAdd(a, b);
+    if (op == "sub") return wrapSub(a, b);
+    if (op == "mul") return wrapMul(a, b);
+    if (op == "div") {
+        if (b == 0) return std::nullopt;               // div by zero is UB; leave it
+        if (a == kMin && b == -1) return kMin;          // match RISC-V semantics
+        return a / b;
+    }
+    if (op == "rem") {
+        if (b == 0) return std::nullopt;
+        if (a == kMin && b == -1) return 0;
+        return a % b;
+    }
+    if (op == "eq") return a == b ? 1 : 0;
+    if (op == "ne") return a != b ? 1 : 0;
+    if (op == "lt") return a < b ? 1 : 0;
+    if (op == "le") return a <= b ? 1 : 0;
+    if (op == "gt") return a > b ? 1 : 0;
+    if (op == "ge") return a >= b ? 1 : 0;
+    return std::nullopt;
+}
+
+// Maps a binary instruction type to its fold mnemonic.
+template <typename T>
+constexpr std::string_view binaryOpName() {
+    if constexpr (std::is_same_v<T, c::AddInst>) return "add";
+    else if constexpr (std::is_same_v<T, c::SubInst>) return "sub";
+    else if constexpr (std::is_same_v<T, c::MulInst>) return "mul";
+    else if constexpr (std::is_same_v<T, c::DivInst>) return "div";
+    else if constexpr (std::is_same_v<T, c::ModInst>) return "rem";
+    else if constexpr (std::is_same_v<T, c::EqInst>) return "eq";
+    else if constexpr (std::is_same_v<T, c::NeInst>) return "ne";
+    else if constexpr (std::is_same_v<T, c::LtInst>) return "lt";
+    else if constexpr (std::is_same_v<T, c::LeInst>) return "le";
+    else if constexpr (std::is_same_v<T, c::GtInst>) return "gt";
+    else if constexpr (std::is_same_v<T, c::GeInst>) return "ge";
+    else return "";
+}
+
+// Constant-fold or algebraically simplify a single instruction in place.
+// Returns true if the instruction was replaced.
+bool tryFold(c::Instruction& inst, const ConstMap& consts) {
+    return std::visit(
+        [&](auto& i) -> bool {
+            using T = std::decay_t<decltype(i)>;
+
+            // copy of a known constant becomes a const materialization
+            if constexpr (std::is_same_v<T, c::CopyInst>) {
+                if (const auto v = getConst(consts, i.src)) {
+                    inst = c::ConstInst{i.dst, *v};
+                    return true;
+                }
+                return false;
+            } else if constexpr (std::is_same_v<T, c::NegInst>) {
+                if (const auto v = getConst(consts, i.src)) {
+                    inst = c::ConstInst{i.dst, wrapSub(0, *v)};
+                    return true;
+                }
+                return false;
+            } else if constexpr (std::is_same_v<T, c::LNotInst>) {
+                if (const auto v = getConst(consts, i.src)) {
+                    inst = c::ConstInst{i.dst, *v == 0 ? 1 : 0};
+                    return true;
+                }
+                return false;
+            } else if constexpr (std::is_same_v<T, c::AddInst> || std::is_same_v<T, c::SubInst> ||
+                                 std::is_same_v<T, c::MulInst> || std::is_same_v<T, c::DivInst> ||
+                                 std::is_same_v<T, c::ModInst> || std::is_same_v<T, c::EqInst> ||
+                                 std::is_same_v<T, c::NeInst> || std::is_same_v<T, c::LtInst> ||
+                                 std::is_same_v<T, c::LeInst> || std::is_same_v<T, c::GtInst> ||
+                                 std::is_same_v<T, c::GeInst>) {
+                constexpr std::string_view op = binaryOpName<T>();
+                const std::string dst = i.dst;
+                const std::string src1 = i.src1;
+                const std::string src2 = i.src2;
+                const auto a = getConst(consts, src1);
+                const auto b = getConst(consts, src2);
+
+                // both constant: full fold
+                if (a && b) {
+                    if (const auto r = foldBinary(op, *a, *b)) {
+                        inst = c::ConstInst{dst, *r};
+                        return true;
+                    }
+                    return false;
+                }
+
+                // algebraic identities (only for arithmetic, never compares)
+                if constexpr (std::is_same_v<T, c::AddInst>) {
+                    if (a && *a == 0) { inst = c::CopyInst{dst, src2}; return true; }
+                    if (b && *b == 0) { inst = c::CopyInst{dst, src1}; return true; }
+                } else if constexpr (std::is_same_v<T, c::SubInst>) {
+                    if (b && *b == 0) { inst = c::CopyInst{dst, src1}; return true; }
+                    if (src1 == src2) { inst = c::ConstInst{dst, 0}; return true; }
+                } else if constexpr (std::is_same_v<T, c::MulInst>) {
+                    if ((a && *a == 0) || (b && *b == 0)) { inst = c::ConstInst{dst, 0}; return true; }
+                    if (a && *a == 1) { inst = c::CopyInst{dst, src2}; return true; }
+                    if (b && *b == 1) { inst = c::CopyInst{dst, src1}; return true; }
+                    if (a && *a == 2) { inst = c::AddInst{dst, src2, src2}; return true; }
+                    if (b && *b == 2) { inst = c::AddInst{dst, src1, src1}; return true; }
+                } else if constexpr (std::is_same_v<T, c::DivInst>) {
+                    if (b && *b == 1) { inst = c::CopyInst{dst, src1}; return true; }
+                } else if constexpr (std::is_same_v<T, c::ModInst>) {
+                    if (b && *b == 1) { inst = c::ConstInst{dst, 0}; return true; }
+                }
+                return false;
+            } else {
+                return false;
+            }
+        },
+        inst);
+}
+
+// Forward pass over a block: copy propagation + constant folding/algebraic.
+bool simplifyBlock(c::BasicBlock& block) {
+    ConstMap consts;
+    CopyMap copies;
+    bool changed = false;
+
+    for (c::Instruction& inst : block.instructions) {
+        forEachUse(inst, [&](std::string& operand) {
+            const std::string resolved = resolve(copies, operand);
+            if (resolved != operand) {
+                operand = resolved;
+                changed = true;
+            }
+        });
+
+        if (tryFold(inst, consts)) {
+            changed = true;
+        }
+
+        const std::string dst = defOf(inst);
+        if (!dst.empty()) {
+            invalidateDef(dst, consts, copies);
+        }
+
+        std::visit(
+            [&](auto& i) {
+                using T = std::decay_t<decltype(i)>;
+                if constexpr (std::is_same_v<T, c::ConstInst>) {
+                    consts[i.dst] = i.value;
+                } else if constexpr (std::is_same_v<T, c::CopyInst>) {
+                    copies[i.dst] = i.src;
+                }
+            },
+            inst);
+    }
+
+    forEachUse(block.terminator, [&](std::string& operand) {
+        const std::string resolved = resolve(copies, operand);
+        if (resolved != operand) {
+            operand = resolved;
+            changed = true;
+        }
+    });
+
+    return changed;
+}
+
+// Backward DCE within each block: drop pure defs not used later or live-out.
+bool deadCodeElim(c::IRFunction& function) {
+    const VRegAnalysis analysis = analyzeVRegs(function);
+    bool changed = false;
+
+    for (c::BasicBlock& block : function.basicBlocks) {
+        std::set<std::string, std::less<>> live;
+        const auto outIt = analysis.liveOuts.find(block.label);
+        if (outIt != analysis.liveOuts.end()) {
+            live = outIt->second;
+        }
+        // The terminator's operands are used after the last instruction; seed
+        // them so we never delete the def of a branch condition or return value.
+        forEachUse(block.terminator, [&](std::string& operand) { live.insert(operand); });
+
+        std::vector<c::Instruction> kept;
+        kept.reserve(block.instructions.size());
+        for (auto it = block.instructions.rbegin(); it != block.instructions.rend(); ++it) {
+            c::Instruction& inst = *it;
+            const std::string dst = defOf(inst);
+
+            if (!dst.empty() && isPure(inst) && live.find(dst) == live.end()) {
+                changed = true;
+                continue; // dead: drop it
+            }
+
+            if (!dst.empty()) {
+                live.erase(dst);
+            }
+            forEachUse(inst, [&](std::string& operand) { live.insert(operand); });
+            kept.push_back(std::move(inst));
+        }
+
+        std::reverse(kept.begin(), kept.end());
+        block.instructions = std::move(kept);
+    }
+
+    return changed;
+}
+
+} // namespace
+
+void IrOptimizer::optimize(c::IRFunction& function) {
+    constexpr int kMaxIterations = 8;
+    for (int iter = 0; iter < kMaxIterations; ++iter) {
+        bool changed = false;
+        for (c::BasicBlock& block : function.basicBlocks) {
+            changed |= simplifyBlock(block);
+        }
+        changed |= deadCodeElim(function);
+        if (!changed) {
+            break;
+        }
+    }
+}
+
+void IrOptimizer::optimize(c::IRModule& module) {
+    for (c::IRFunction& function : module.functions) {
+        optimize(function);
+    }
+}
+
+} // namespace toyc::codegen

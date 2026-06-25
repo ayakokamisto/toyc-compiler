@@ -5,23 +5,43 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace toyc::codegen {
 
 namespace {
 
+// Callee-saved registers: survive across calls but must be saved/restored in
+// the prologue/epilogue. Used for values whose live range crosses a call.
 constexpr std::array<std::string_view, 11> kCalleeSavedPool = {
     "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
+};
+
+// Caller-saved temporaries: free to use with no save/restore, but clobbered by
+// any call. Used only for values whose live range does NOT cross a call.
+// t0/t1 are reserved as instruction-selection scratch and excluded here.
+constexpr std::array<std::string_view, 5> kCallerSavedPool = {
+    "t2", "t3", "t4", "t5", "t6",
 };
 
 constexpr int kCalleeSavedSaveRestoreCost = 2;
 constexpr int kMinimumRepeatedUseCount = 2;
 constexpr int kLoopWeightedProfitability = 10;
+
+bool isCallerSaved(std::string_view reg) {
+    for (const std::string_view r : kCallerSavedPool) {
+        if (r == reg) {
+            return true;
+        }
+    }
+    return false;
+}
 
 struct ActiveInterval {
     LiveInterval interval;
@@ -29,12 +49,17 @@ struct ActiveInterval {
 };
 
 int registerOrder(std::string_view reg) {
-    for (std::size_t i = 0; i < kCalleeSavedPool.size(); ++i) {
-        if (kCalleeSavedPool[i] == reg) {
+    for (std::size_t i = 0; i < kCallerSavedPool.size(); ++i) {
+        if (kCallerSavedPool[i] == reg) {
             return static_cast<int>(i);
         }
     }
-    return static_cast<int>(kCalleeSavedPool.size());
+    for (std::size_t i = 0; i < kCalleeSavedPool.size(); ++i) {
+        if (kCalleeSavedPool[i] == reg) {
+            return static_cast<int>(kCallerSavedPool.size() + i);
+        }
+    }
+    return static_cast<int>(kCallerSavedPool.size() + kCalleeSavedPool.size());
 }
 
 void sortFreeRegisters(std::vector<std::string>& freeRegs) {
@@ -62,6 +87,8 @@ bool isLessValuableForRegister(const LiveInterval& lhs, const LiveInterval& rhs)
     return lhs.vreg > rhs.vreg;
 }
 
+// A call-crossing value must live in a callee-saved register (survives calls)
+// and pays a save/restore cost, so it must clear the profitability gate.
 bool isProfitableForCalleeSavedRegister(const LiveInterval& interval) {
     if (interval.useCount <= 0) {
         return false;
@@ -76,6 +103,20 @@ bool isProfitableForCalleeSavedRegister(const LiveInterval& interval) {
         return false;
     }
     return interval.useCount >= kMinimumRepeatedUseCount;
+}
+
+// A value that never crosses a call can use a caller-saved temp for free (no
+// save/restore), so any used value is worth a register if one is available.
+bool isProfitableForCallerSavedRegister(const LiveInterval& interval) {
+    return interval.useCount > 0 && interval.callCrossingCount == 0;
+}
+
+bool isIntervalCandidate(const LiveInterval& interval) {
+    if (interval.callCrossingCount > 0) {
+        return isProfitableForCalleeSavedRegister(interval);
+    }
+    return isProfitableForCallerSavedRegister(interval) ||
+           isProfitableForCalleeSavedRegister(interval);
 }
 
 void expireOldIntervals(const LiveInterval& current,
@@ -93,11 +134,48 @@ void expireOldIntervals(const LiveInterval& current,
     sortFreeRegisters(freeRegs);
 }
 
-VRegAssignment assignPhysicalRegistersLinearScan(const VRegAnalysis& analysis) {
+// Pick a free register for `interval` from `freeRegs`. A call-crossing
+// interval may only use callee-saved registers. A non-crossing interval
+// prefers a caller-saved temp (free); it falls back to a callee-saved register
+// only if it is profitable enough to pay the save/restore cost.
+// Returns the chosen register, or empty if none is usable.
+std::string pickFreeRegister(const LiveInterval& interval, std::vector<std::string>& freeRegs) {
+    const bool crossesCall = interval.callCrossingCount > 0;
+    // freeRegs is kept sorted caller-saved first, then callee-saved.
+    if (!crossesCall) {
+        for (auto it = freeRegs.begin(); it != freeRegs.end(); ++it) {
+            if (isCallerSaved(*it)) {
+                const std::string reg = *it;
+                freeRegs.erase(it);
+                return reg;
+            }
+        }
+        // No caller-saved temp left. Only consume a callee-saved register if
+        // this value is worth its save/restore cost.
+        if (!isProfitableForCalleeSavedRegister(interval)) {
+            return {};
+        }
+    }
+    for (auto it = freeRegs.begin(); it != freeRegs.end(); ++it) {
+        if (!isCallerSaved(*it)) {
+            const std::string reg = *it;
+            freeRegs.erase(it);
+            return reg;
+        }
+    }
+    return {};
+}
+
+VRegAssignment assignPhysicalRegistersLinearScan(
+    const VRegAnalysis& analysis,
+    const std::unordered_map<std::string, std::int32_t>& excluded) {
     std::vector<LiveInterval> intervals;
     intervals.reserve(analysis.liveIntervals.size());
     for (const LiveInterval& interval : analysis.liveIntervals) {
-        if (isProfitableForCalleeSavedRegister(interval)) {
+        if (excluded.count(interval.vreg) != 0) {
+            continue; // foldable immediate constant: never needs a register
+        }
+        if (isIntervalCandidate(interval)) {
             intervals.push_back(interval);
         }
     }
@@ -112,7 +190,10 @@ VRegAssignment assignPhysicalRegistersLinearScan(const VRegAnalysis& analysis) {
     });
 
     std::vector<std::string> freeRegs;
-    freeRegs.reserve(kCalleeSavedPool.size());
+    freeRegs.reserve(kCallerSavedPool.size() + kCalleeSavedPool.size());
+    for (const std::string_view reg : kCallerSavedPool) {
+        freeRegs.emplace_back(reg);
+    }
     for (const std::string_view reg : kCalleeSavedPool) {
         freeRegs.emplace_back(reg);
     }
@@ -123,29 +204,41 @@ VRegAssignment assignPhysicalRegistersLinearScan(const VRegAnalysis& analysis) {
     for (const LiveInterval& interval : intervals) {
         expireOldIntervals(interval, active, freeRegs);
 
-        if (!freeRegs.empty()) {
-            const std::string reg = freeRegs.front();
-            freeRegs.erase(freeRegs.begin());
+        if (std::string reg = pickFreeRegister(interval, freeRegs); !reg.empty()) {
             assigned[interval.vreg] = reg;
-            active.push_back(ActiveInterval{interval, reg});
+            active.push_back(ActiveInterval{interval, std::move(reg)});
             sortActiveByEnd(active);
             continue;
         }
 
-        auto spillIt = std::min_element(
-            active.begin(),
-            active.end(),
-            [](const ActiveInterval& lhs, const ActiveInterval& rhs) {
-                return isLessValuableForRegister(lhs.interval, rhs.interval);
-            });
-        if (spillIt == active.end() ||
-            !isLessValuableForRegister(spillIt->interval, interval)) {
+        // No free register usable for this interval. Try to steal from a less
+        // valuable active interval that holds a register this one can use.
+        const bool calleeProfitable = isProfitableForCalleeSavedRegister(interval);
+        ActiveInterval* spillTarget = nullptr;
+        for (ActiveInterval& candidate : active) {
+            if (isCallerSaved(candidate.reg)) {
+                // A call-crossing interval cannot live in a caller-saved temp.
+                if (interval.callCrossingCount > 0) {
+                    continue;
+                }
+            } else if (!calleeProfitable) {
+                // This interval is not worth a callee-saved register's
+                // save/restore cost, so it may not steal one.
+                continue;
+            }
+            if (spillTarget == nullptr ||
+                isLessValuableForRegister(candidate.interval, spillTarget->interval)) {
+                spillTarget = &candidate;
+            }
+        }
+        if (spillTarget == nullptr ||
+            !isLessValuableForRegister(spillTarget->interval, interval)) {
             continue;
         }
 
-        const std::string reg = spillIt->reg;
-        assigned.erase(spillIt->interval.vreg);
-        *spillIt = ActiveInterval{interval, reg};
+        const std::string reg = spillTarget->reg;
+        assigned.erase(spillTarget->interval.vreg);
+        *spillTarget = ActiveInterval{interval, reg};
         assigned[interval.vreg] = reg;
         sortActiveByEnd(active);
     }
@@ -159,24 +252,36 @@ VRegAssignment assignPhysicalRegistersLinearScan(const VRegAnalysis& analysis) {
 
 } // namespace
 
-RegisterAllocation RegisterAllocator::allocate(const contract::IRFunction& function,
-                                               const bool enableOpt) {
+RegisterAllocation RegisterAllocator::allocate(
+    const contract::IRFunction& function,
+    const bool enableOpt,
+    const std::unordered_map<std::string, std::int32_t>& excluded) {
     const VRegAnalysis analysis = analyzeVRegs(function);
     VRegAssignment assignment;
     if (enableOpt) {
-        assignment = assignPhysicalRegistersLinearScan(analysis);
+        assignment = assignPhysicalRegistersLinearScan(analysis, excluded);
     }
 
     StackFrame frame;
     for (const std::string& vreg : analysis.discoveryOrder) {
+        if (excluded.count(vreg) != 0) {
+            continue; // foldable immediate constant: never materialized
+        }
         if (assignment.isStackSlot(vreg)) {
             frame.addVReg(vreg);
         }
     }
     if (enableOpt) {
         for (const std::string& vreg : analysis.discoveryOrder) {
+            if (excluded.count(vreg) != 0) {
+                continue;
+            }
             if (const std::optional<std::string_view> reg = assignment.physicalReg(vreg)) {
-                frame.addCalleeSavedRegister(*reg);
+                // Caller-saved temporaries (t2-t6) need no prologue/epilogue
+                // save; only callee-saved registers are recorded in the frame.
+                if (!isCallerSaved(*reg)) {
+                    frame.addCalleeSavedRegister(*reg);
+                }
             }
         }
     }

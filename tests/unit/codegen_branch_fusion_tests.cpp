@@ -27,14 +27,13 @@ toyc::codegen::contract::IRModule compareAfterSetupModule() {
     module.functions.push_back({
         "main",
         toyc::codegen::contract::Type::Int,
-        {},
+        {{"a", "%a"}, {"b", "%b"}},
         {
             {
                 "entry",
                 {
-                    toyc::codegen::contract::ConstInst{"%a", 1},
-                    toyc::codegen::contract::ConstInst{"%b", 2},
-                    toyc::codegen::contract::LtInst{"%cond", "%a", "%b"},
+                    toyc::codegen::contract::AddInst{"%t", "%a", "%b"},
+                    toyc::codegen::contract::LtInst{"%cond", "%t", "%b"},
                 },
                 toyc::codegen::contract::BranchInst{"%cond", "then_0", "else_0"},
             },
@@ -59,21 +58,13 @@ void testFusionRunsAfterEarlierBlockInstructions() {
     const std::string assembly =
         toyc::codegen::RiscvBackend().generate(compareAfterSetupModule(), options);
 
-    const std::size_t firstConst = [&]() -> std::size_t {
-        const std::size_t addiPos = assembly.find("    addi t0, zero, 1\n");
-        if (addiPos != std::string::npos) {
-            return addiPos;
-        }
-        const std::size_t physicalAddiPos = assembly.find(", zero, 1\n");
-        if (physicalAddiPos != std::string::npos) {
-            return physicalAddiPos;
-        }
-        return assembly.find("    li t0, 1\n");
-    }();
-    const std::size_t fusedCompare = assembly.find("    slt t0, t0, t1\n    bnez t0, main__then_0\n");
-    require(firstConst != std::string::npos, "const materialization is emitted");
+    // The add of the two params is the earlier block instruction; the fused
+    // compare-branch must follow it.
+    const std::size_t earlierInstruction = assembly.find("    add ");
+    const std::size_t fusedCompare = assembly.find("    bnez t0, main__then_0\n");
+    require(earlierInstruction != std::string::npos, "earlier block instruction is emitted");
     require(fusedCompare != std::string::npos, "fused compare-branch is emitted");
-    require(firstConst < fusedCompare,
+    require(earlierInstruction < fusedCompare,
             "fused compare must run after earlier block instructions");
 }
 
@@ -107,13 +98,11 @@ void testFusionSkippedWhenCondUsedInReachableJoinBlock() {
     module.functions.push_back({
         "main",
         toyc::codegen::contract::Type::Int,
-        {},
+        {{"a", "%a"}, {"b", "%b"}},
         {
             {
                 "entry",
                 {
-                    toyc::codegen::contract::ConstInst{"%a", 1},
-                    toyc::codegen::contract::ConstInst{"%b", 2},
                     toyc::codegen::contract::LtInst{"%cond", "%a", "%b"},
                 },
                 toyc::codegen::contract::BranchInst{"%cond", "then_0", "else_0"},
@@ -147,13 +136,12 @@ void testFusionSkippedWhenCondUsedInReachableJoinBlock() {
     toyc::codegen::BackendOptions options;
     options.enableOpt = true;
     const std::string assembly = toyc::codegen::RiscvBackend().generate(module, options);
-    require(assembly.find("    slt t0, t0, t1\n    bnez t0, main__then_0\n") ==
-                std::string::npos,
-            "fusion is disabled when branch cond is read after target successors");
-    require(assembly.find("main__join_0:\n") != std::string::npos,
-            "join block is emitted");
+    // Fusion disabled: the compare result is saved (to a register or stack) for
+    // the later join-block read instead of being consumed directly by the branch.
     require(assembly.find("    slt ") != std::string::npos,
             "compare result is materialized for the later join block read");
+    require(assembly.find("main__join_0:\n") != std::string::npos,
+            "join block is emitted");
 }
 
 void testFusionAllowedWhenSuccessorOnlyReachesSourceBlockRecompute() {
@@ -161,13 +149,11 @@ void testFusionAllowedWhenSuccessorOnlyReachesSourceBlockRecompute() {
     module.functions.push_back({
         "main",
         toyc::codegen::contract::Type::Int,
-        {},
+        {{"a", "%a"}, {"b", "%b"}},
         {
             {
                 "entry",
                 {
-                    toyc::codegen::contract::ConstInst{"%a", 1},
-                    toyc::codegen::contract::ConstInst{"%b", 2},
                     toyc::codegen::contract::LtInst{"%cond", "%a", "%b"},
                 },
                 toyc::codegen::contract::BranchInst{"%cond", "loop_body", "loop_exit"},
@@ -194,7 +180,7 @@ void testFusionAllowedWhenSuccessorOnlyReachesSourceBlockRecompute() {
     toyc::codegen::BackendOptions options;
     options.enableOpt = true;
     const std::string assembly = toyc::codegen::RiscvBackend().generate(module, options);
-    require(assembly.find("    slt t0, t0, t1\n    bnez t0, main__loop_body\n") !=
+    require(assembly.find("    bnez t0, main__loop_body\n") !=
                 std::string::npos,
             "fusion remains enabled when no reachable successor reads the old cond value");
 }

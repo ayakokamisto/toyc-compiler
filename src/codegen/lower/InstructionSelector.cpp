@@ -11,12 +11,40 @@ namespace toyc::codegen {
 InstructionSelector::InstructionSelector(RiscvEmitter& emitter,
                                          const StackFrame& frame,
                                          const VRegAssignment& assignment,
-                                         const bool enableOpt)
+                                         const bool enableOpt,
+                                         std::unordered_map<std::string, std::int32_t> foldableConsts)
     : emitter_(emitter),
       frame_(frame),
       assignment_(assignment),
       abi_(emitter, frame, assignment),
-      enableOpt_(enableOpt) {}
+      enableOpt_(enableOpt),
+      foldableConsts_(std::move(foldableConsts)) {}
+
+std::optional<std::int32_t> InstructionSelector::foldableConst(std::string_view vreg) const {
+    if (!enableOpt_) {
+        return std::nullopt;
+    }
+    const auto it = foldableConsts_.find(std::string(vreg));
+    if (it == foldableConsts_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+bool InstructionSelector::hasFoldableOperand(std::string_view src1, std::string_view src2) const {
+    return foldableConst(src1).has_value() || foldableConst(src2).has_value();
+}
+
+std::string_view InstructionSelector::zeroCompareOperand(std::string_view src1,
+                                                         std::string_view src2) const {
+    if (foldableConst(src1) == std::optional<std::int32_t>(0)) {
+        return src2;
+    }
+    if (foldableConst(src2) == std::optional<std::int32_t>(0)) {
+        return src1;
+    }
+    return {};
+}
 
 void InstructionSelector::beginBasicBlock() {
     if (enableOpt_) {
@@ -174,6 +202,38 @@ void InstructionSelector::emitBinaryOp(std::string_view dst,
     storeVReg(dst, "t0");
 }
 
+bool InstructionSelector::tryEmitImmediateBinaryOp(std::string_view dst,
+                                                   std::string_view src,
+                                                   const std::int32_t immValue,
+                                                   std::string_view immMnemonic) {
+    // src must be a real value (never itself a folded-away constant).
+    if (foldableConst(src).has_value()) {
+        return false;
+    }
+    if (const std::optional<std::string_view> dstPhys = physicalReg(dst)) {
+        if (const std::optional<std::string_view> srcPhys = physicalReg(src)) {
+            emitter_.instruction(std::string(immMnemonic), {*dstPhys, *srcPhys, imm(immValue)});
+            vregCache_.forgetVReg(dst);
+            return true;
+        }
+        loadVReg(*dstPhys, src);
+        emitter_.instruction(std::string(immMnemonic), {*dstPhys, *dstPhys, imm(immValue)});
+        vregCache_.forgetVReg(dst);
+        return true;
+    }
+
+    // dst lives on the stack: compute into t0, then store.
+    vregCache_.clobberRegister("t0");
+    if (const std::optional<std::string_view> srcPhys = physicalReg(src)) {
+        emitter_.instruction(std::string(immMnemonic), {"t0", *srcPhys, imm(immValue)});
+    } else {
+        loadVReg("t0", src);
+        emitter_.instruction(std::string(immMnemonic), {"t0", "t0", imm(immValue)});
+    }
+    storeVReg(dst, "t0");
+    return true;
+}
+
 void InstructionSelector::emitBranchTo(std::string_view functionName,
                                        std::string_view trueLabel,
                                        std::string_view falseLabel,
@@ -189,6 +249,11 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
         [&](const auto& inst) {
             using Inst = std::decay_t<decltype(inst)>;
             if constexpr (std::is_same_v<Inst, contract::ConstInst>) {
+                // Foldable immediate constants are never materialized; their
+                // uses are emitted as immediate operands instead.
+                if (foldableConst(inst.dst).has_value()) {
+                    return;
+                }
                 if (tryEmitPhysicalConst(inst.dst, inst.value)) {
                     return;
                 }
@@ -261,8 +326,17 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 abi_.emitCallCleanup(inst.args.size());
                 vregCache_.invalidateAll();
             } else if constexpr (std::is_same_v<Inst, contract::AddInst>) {
+                if (const auto v = foldableConst(inst.src2)) {
+                    if (tryEmitImmediateBinaryOp(inst.dst, inst.src1, *v, "addi")) return;
+                }
+                if (const auto v = foldableConst(inst.src1)) {
+                    if (tryEmitImmediateBinaryOp(inst.dst, inst.src2, *v, "addi")) return;
+                }
                 emitBinaryOp(inst.dst, inst.src1, inst.src2, "add");
             } else if constexpr (std::is_same_v<Inst, contract::SubInst>) {
+                if (const auto v = foldableConst(inst.src2)) {
+                    if (tryEmitImmediateBinaryOp(inst.dst, inst.src1, -*v, "addi")) return;
+                }
                 emitBinaryOp(inst.dst, inst.src1, inst.src2, "sub");
             } else if constexpr (std::is_same_v<Inst, contract::MulInst>) {
                 emitBinaryOp(inst.dst, inst.src1, inst.src2, "mul");
@@ -279,6 +353,27 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 emitter_.instruction("sub", {"t0", "zero", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::EqInst>) {
+                // x == 0  ->  seqz dst, x  (no constant materialization)
+                std::string_view other;
+                if (foldableConst(inst.src1) == std::optional<std::int32_t>(0)) {
+                    other = inst.src2;
+                } else if (foldableConst(inst.src2) == std::optional<std::int32_t>(0)) {
+                    other = inst.src1;
+                }
+                if (!other.empty()) {
+                    if (const std::optional<std::string_view> dstPhys = physicalReg(inst.dst)) {
+                        if (const std::optional<std::string_view> srcPhys = physicalReg(other)) {
+                            emitter_.instruction("seqz", {*dstPhys, *srcPhys});
+                            vregCache_.forgetVReg(inst.dst);
+                            return;
+                        }
+                    }
+                    loadVReg("t0", other);
+                    vregCache_.clobberRegister("t0");
+                    emitter_.instruction("seqz", {"t0", "t0"});
+                    storeVReg(inst.dst, "t0");
+                    return;
+                }
                 if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "eq")) {
                     return;
                 }
@@ -288,6 +383,27 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 emitter_.instruction("seqz", {"t0", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::NeInst>) {
+                // x != 0  ->  snez dst, x
+                std::string_view other;
+                if (foldableConst(inst.src1) == std::optional<std::int32_t>(0)) {
+                    other = inst.src2;
+                } else if (foldableConst(inst.src2) == std::optional<std::int32_t>(0)) {
+                    other = inst.src1;
+                }
+                if (!other.empty()) {
+                    if (const std::optional<std::string_view> dstPhys = physicalReg(inst.dst)) {
+                        if (const std::optional<std::string_view> srcPhys = physicalReg(other)) {
+                            emitter_.instruction("snez", {*dstPhys, *srcPhys});
+                            vregCache_.forgetVReg(inst.dst);
+                            return;
+                        }
+                    }
+                    loadVReg("t0", other);
+                    vregCache_.clobberRegister("t0");
+                    emitter_.instruction("snez", {"t0", "t0"});
+                    storeVReg(inst.dst, "t0");
+                    return;
+                }
                 if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "ne")) {
                     return;
                 }
@@ -297,6 +413,9 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 emitter_.instruction("snez", {"t0", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::LtInst>) {
+                if (const auto v = foldableConst(inst.src2)) {
+                    if (tryEmitImmediateBinaryOp(inst.dst, inst.src1, *v, "slti")) return;
+                }
                 if (!tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "lt")) {
                     emitBinaryOp(inst.dst, inst.src1, inst.src2, "slt");
                 }
@@ -353,6 +472,23 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
                 if (inst.dst != branch.cond) {
                     return false;
                 }
+                // x == 0  ->  beqz x
+                if (const std::string_view z = zeroCompareOperand(inst.src1, inst.src2);
+                    !z.empty()) {
+                    if (const std::optional<std::string_view> zPhys = physicalReg(z)) {
+                        emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "beqz",
+                                     *zPhys);
+                    } else {
+                        loadVReg("t0", z);
+                        emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "beqz",
+                                     "t0");
+                    }
+                    vregCache_.invalidateAll();
+                    return true;
+                }
+                if (hasFoldableOperand(inst.src1, inst.src2)) {
+                    return false; // let the immediate-aware emit path handle it
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("sub", {"t0", "t0", "t1"});
@@ -362,6 +498,23 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
             }
             if constexpr (std::is_same_v<Inst, contract::NeInst>) {
                 if (inst.dst != branch.cond) {
+                    return false;
+                }
+                // x != 0  ->  bnez x
+                if (const std::string_view z = zeroCompareOperand(inst.src1, inst.src2);
+                    !z.empty()) {
+                    if (const std::optional<std::string_view> zPhys = physicalReg(z)) {
+                        emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "bnez",
+                                     *zPhys);
+                    } else {
+                        loadVReg("t0", z);
+                        emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "bnez",
+                                     "t0");
+                    }
+                    vregCache_.invalidateAll();
+                    return true;
+                }
+                if (hasFoldableOperand(inst.src1, inst.src2)) {
                     return false;
                 }
                 emitBinaryInputs(inst.src1, inst.src2);
@@ -375,6 +528,22 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
                 if (inst.dst != branch.cond) {
                     return false;
                 }
+                // x < C  ->  slti t0, x, C ; bnez t0
+                if (const auto v = foldableConst(inst.src2)) {
+                    vregCache_.clobberRegister("t0");
+                    if (const std::optional<std::string_view> srcPhys = physicalReg(inst.src1)) {
+                        emitter_.instruction("slti", {"t0", *srcPhys, imm(*v)});
+                    } else {
+                        loadVReg("t0", inst.src1);
+                        emitter_.instruction("slti", {"t0", "t0", imm(*v)});
+                    }
+                    emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "bnez", "t0");
+                    vregCache_.invalidateAll();
+                    return true;
+                }
+                if (hasFoldableOperand(inst.src1, inst.src2)) {
+                    return false;
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("slt", {"t0", "t0", "t1"});
@@ -384,6 +553,9 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
             }
             if constexpr (std::is_same_v<Inst, contract::LeInst>) {
                 if (inst.dst != branch.cond) {
+                    return false;
+                }
+                if (hasFoldableOperand(inst.src1, inst.src2)) {
                     return false;
                 }
                 emitBinaryInputs(inst.src1, inst.src2);
@@ -398,6 +570,9 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
                 if (inst.dst != branch.cond) {
                     return false;
                 }
+                if (hasFoldableOperand(inst.src1, inst.src2)) {
+                    return false;
+                }
                 emitBinaryInputs(inst.src1, inst.src2);
                 vregCache_.clobberRegister("t0");
                 emitter_.instruction("slt", {"t0", "t1", "t0"});
@@ -407,6 +582,9 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
             }
             if constexpr (std::is_same_v<Inst, contract::GeInst>) {
                 if (inst.dst != branch.cond) {
+                    return false;
+                }
+                if (hasFoldableOperand(inst.src1, inst.src2)) {
                     return false;
                 }
                 emitBinaryInputs(inst.src1, inst.src2);
@@ -419,6 +597,9 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
             }
             if constexpr (std::is_same_v<Inst, contract::LNotInst>) {
                 if (inst.dst != branch.cond) {
+                    return false;
+                }
+                if (foldableConst(inst.src).has_value()) {
                     return false;
                 }
                 loadVReg("t0", inst.src);

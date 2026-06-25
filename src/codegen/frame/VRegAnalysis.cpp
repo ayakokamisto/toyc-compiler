@@ -396,7 +396,12 @@ VRegAnalysis analyzeVRegs(const contract::IRFunction& function) {
             weightIt == analysis.accessWeights.end() ? useCount : weightIt->second;
         int callCrossingCount = 0;
         for (const int callPosition : callPositions) {
-            if (it->second.minPosition < callPosition && callPosition < it->second.maxPosition) {
+            // A value crosses a call if it is live at or before the call and
+            // still used after it. Using `min <= call` (rather than `min <
+            // call`) is essential: a value used AS a call argument and again
+            // after the call has minPosition == callPosition, yet it must
+            // survive the call and therefore needs a callee-saved register.
+            if (it->second.minPosition <= callPosition && callPosition < it->second.maxPosition) {
                 ++callCrossingCount;
             }
         }
