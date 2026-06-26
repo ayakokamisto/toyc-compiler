@@ -46,9 +46,20 @@ std::string_view InstructionSelector::zeroCompareOperand(std::string_view src1,
     return {};
 }
 
+void InstructionSelector::invalidateGlobalAddr(std::string_view reg) {
+    for (auto it = globalAddrReg_.begin(); it != globalAddrReg_.end();) {
+        if (it->second == reg) {
+            it = globalAddrReg_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void InstructionSelector::beginBasicBlock() {
     if (enableOpt_) {
         vregCache_.invalidateAll();
+        globalAddrReg_.clear();
     }
 }
 
@@ -180,6 +191,10 @@ bool InstructionSelector::tryEmitPhysicalLoadGlobal(std::string_view dst, std::s
     emitter_.instruction("lw", {*dstPhys, offsetReg(0, "t0")});
     vregCache_.clobberRegister("t0");
     vregCache_.forgetVReg(dst);
+    if (enableOpt_) {
+        invalidateGlobalAddr("t0");
+        globalAddrReg_[std::string(name)] = "t0";
+    }
     return true;
 }
 
@@ -421,6 +436,10 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::LoadGlobalInst>) {
                 if (tryEmitPhysicalLoadGlobal(inst.dst, inst.name)) {
+                    // t0 holds address after la; track for later reuse.
+                    if (enableOpt_) {
+                        globalAddrReg_[inst.name] = "t0";
+                    }
                     return;
                 }
                 emitter_.instruction("la", {"t0", globalLabel(inst.name)});
@@ -428,14 +447,37 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 vregCache_.clobberRegister("t0");
                 vregCache_.clobberRegister("t1");
                 storeVReg(inst.dst, "t1");
+                if (enableOpt_) {
+                    invalidateGlobalAddr("t0");
+                    globalAddrReg_[inst.name] = "t0";
+                }
             } else if constexpr (std::is_same_v<Inst, contract::StoreGlobalInst>) {
-                loadVReg("t0", inst.src);
-                emitter_.instruction("la", {"t1", globalLabel(inst.name)});
-                emitter_.instruction("sw", {"t0", offsetReg(0, "t1")});
-                vregCache_.clobberRegister("t0");
-                vregCache_.clobberRegister("t1");
+                // Under -opt: try to reuse a cached global address so we don't
+                // emit a second `la`.  Non-opt keeps the original pattern.
+                auto addrIt = enableOpt_ ? globalAddrReg_.find(inst.name)
+                                         : globalAddrReg_.end();
+                if (addrIt != globalAddrReg_.end()) {
+                    loadVReg("t1", inst.src);
+                    vregCache_.clobberRegister("t1");
+                    emitter_.instruction("sw", {"t1", offsetReg(0, addrIt->second)});
+                } else if (enableOpt_) {
+                    loadVReg("t1", inst.src);
+                    vregCache_.clobberRegister("t1");
+                    emitter_.instruction("la", {"t0", globalLabel(inst.name)});
+                    emitter_.instruction("sw", {"t1", offsetReg(0, "t0")});
+                    vregCache_.clobberRegister("t0");
+                    invalidateGlobalAddr("t0");
+                    globalAddrReg_[inst.name] = "t0";
+                } else {
+                    loadVReg("t0", inst.src);
+                    emitter_.instruction("la", {"t1", globalLabel(inst.name)});
+                    emitter_.instruction("sw", {"t0", offsetReg(0, "t1")});
+                    vregCache_.clobberRegister("t0");
+                    vregCache_.clobberRegister("t1");
+                }
             } else if constexpr (std::is_same_v<Inst, contract::CallInst>) {
                 vregCache_.invalidateAll();
+                globalAddrReg_.clear();
                 abi_.emitCallArgs(inst.args);
                 emitter_.instruction("call", {inst.functionName});
                 abi_.emitCallCleanup(inst.args.size());
@@ -443,6 +485,7 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 storeVReg(inst.dst, "a0");
             } else if constexpr (std::is_same_v<Inst, contract::CallVoidInst>) {
                 vregCache_.invalidateAll();
+                globalAddrReg_.clear();
                 abi_.emitCallArgs(inst.args);
                 emitter_.instruction("call", {inst.functionName});
                 abi_.emitCallCleanup(inst.args.size());
@@ -551,6 +594,13 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                     emitBinaryOp(inst.dst, inst.src1, inst.src2, "slt");
                 }
             } else if constexpr (std::is_same_v<Inst, contract::LeInst>) {
+                // x <= C ⟺ x < C+1 → slti (when C+1 fits in 12-bit imm)
+                if (const auto v = foldableConst(inst.src2)) {
+                    if (*v < 2047 && tryEmitImmediateBinaryOp(
+                        inst.dst, inst.src1, *v + 1, "slti")) {
+                        return;
+                    }
+                }
                 if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "le")) {
                     return;
                 }
@@ -560,6 +610,17 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 emitter_.instruction("xori", {"t0", "t0", "1"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::GtInst>) {
+                // x > C ⟺ !(x < C+1) → slti t0, x, C+1; xori t0, t0, 1
+                if (const auto v = foldableConst(inst.src2)) {
+                    if (*v < 2047 && tryEmitImmediateBinaryOp(
+                        inst.dst, inst.src1, *v + 1, "slti")) {
+                        // Immediate form emitted; invert the result.
+                        const auto dstPhys = physicalReg(inst.dst);
+                        const std::string dstReg = dstPhys ? std::string(*dstPhys) : "t0";
+                        emitter_.instruction("xori", {dstReg, dstReg, "1"});
+                        return;
+                    }
+                }
                 if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "gt")) {
                     return;
                 }
@@ -568,6 +629,15 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 emitter_.instruction("slt", {"t0", "t1", "t0"});
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::GeInst>) {
+                // x >= C ⟺ !(x < C) → slti t0, x, C; xori t0, t0, 1
+                if (const auto v = foldableConst(inst.src2)) {
+                    if (tryEmitImmediateBinaryOp(inst.dst, inst.src1, *v, "slti")) {
+                        const auto dstPhys = physicalReg(inst.dst);
+                        const std::string dstReg = dstPhys ? std::string(*dstPhys) : "t0";
+                        emitter_.instruction("xori", {dstReg, dstReg, "1"});
+                        return;
+                    }
+                }
                 if (tryEmitPhysicalCompareOp(inst.dst, inst.src1, inst.src2, "ge")) {
                     return;
                 }
@@ -686,6 +756,15 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
                 if (inst.dst != branch.cond) {
                     return false;
                 }
+                // x <= C ⟺ x < C+1 → slti ; bnez trueLabel
+                if (const auto v = foldableConst(inst.src2); v && *v < 2047) {
+                    loadVReg("t0", inst.src1);
+                    vregCache_.clobberRegister("t0");
+                    emitter_.instruction("slti", {"t0", "t0", imm(*v + 1)});
+                    emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "bnez", "t0");
+                    vregCache_.invalidateAll();
+                    return true;
+                }
                 if (hasFoldableOperand(inst.src1, inst.src2)) {
                     return false;
                 }
@@ -701,6 +780,15 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
                 if (inst.dst != branch.cond) {
                     return false;
                 }
+                // x > C ⟺ !(x < C+1) → slti t0, x, C+1 ; beqz t0, true
+                if (const auto v = foldableConst(inst.src2); v && *v < 2047) {
+                    loadVReg("t0", inst.src1);
+                    vregCache_.clobberRegister("t0");
+                    emitter_.instruction("slti", {"t0", "t0", imm(*v + 1)});
+                    emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "beqz", "t0");
+                    vregCache_.invalidateAll();
+                    return true;
+                }
                 if (hasFoldableOperand(inst.src1, inst.src2)) {
                     return false;
                 }
@@ -714,6 +802,15 @@ bool InstructionSelector::tryEmitFusedCompareBranch(const contract::Instruction&
             if constexpr (std::is_same_v<Inst, contract::GeInst>) {
                 if (inst.dst != branch.cond) {
                     return false;
+                }
+                // x >= C ⟺ !(x < C) → slti t0, x, C ; beqz t0, true
+                if (const auto v = foldableConst(inst.src2)) {
+                    loadVReg("t0", inst.src1);
+                    vregCache_.clobberRegister("t0");
+                    emitter_.instruction("slti", {"t0", "t0", imm(*v)});
+                    emitBranchTo(functionName, branch.trueLabel, branch.falseLabel, "beqz", "t0");
+                    vregCache_.invalidateAll();
+                    return true;
                 }
                 if (hasFoldableOperand(inst.src1, inst.src2)) {
                     return false;

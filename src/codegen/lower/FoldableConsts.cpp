@@ -138,11 +138,16 @@ computeFoldableImmediateConsts(const c::IRFunction& function) {
                         };
                         if (mulEligible(i.src1)) noteUse(i.src1); else disqualify(i.src1);
                         if (mulEligible(i.src2)) noteUse(i.src2); else disqualify(i.src2);
-                    } else if constexpr (std::is_same_v<T, c::DivInst> ||
-                                         std::is_same_v<T, c::ModInst> ||
-                                         std::is_same_v<T, c::LeInst> ||
+                    } else if constexpr (std::is_same_v<T, c::LeInst> ||
                                          std::is_same_v<T, c::GtInst> ||
                                          std::is_same_v<T, c::GeInst>) {
+                        // const src2 → slti with optional xori; also allow
+                        // const src1 for Gt (C < x → slt) — fall back to
+                        // reg-reg in that case, so disqualify src1.
+                        disqualify(i.src1);
+                        noteUse(i.src2);
+                    } else if constexpr (std::is_same_v<T, c::DivInst> ||
+                                         std::is_same_v<T, c::ModInst>) {
                         disqualify(i.src1);
                         disqualify(i.src2);
                     } else if constexpr (std::is_same_v<T, c::CopyInst> ||

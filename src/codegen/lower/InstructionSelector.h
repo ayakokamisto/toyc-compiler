@@ -88,6 +88,12 @@ private:
     BlockVRegCache vregCache_;
     bool enableOpt_ = false;
     std::unordered_map<std::string, std::int32_t> foldableConsts_;
+    // Global-address cache: after LoadGlobal @g with `la t0, g`, t0 holds
+    // the address of g.  Subsequent StoreGlobal @g can reuse that register
+    // instead of emitting a second `la`.  Entries are invalidated when the
+    // address register is clobbered or a call occurs.
+    std::unordered_map<std::string, std::string> globalAddrReg_;
+    void invalidateGlobalAddr(std::string_view reg);
 };
 
 } // namespace toyc::codegen

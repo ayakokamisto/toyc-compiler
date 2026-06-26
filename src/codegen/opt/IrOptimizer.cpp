@@ -11,6 +11,7 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -594,28 +595,257 @@ bool eliminateTailRecursion(c::IRFunction& function) {
     return changed;
 }
 
+// Loop-invariant code motion: hoist pure computations whose operands are all
+// defined outside the loop out of the loop body into a newly created preheader
+// block.  This eliminates per-iteration reloads of constants and global
+// addresses that never change inside the loop.
+//
+// Safe now (unlike the abandoned c1adc20 attempt) because the improved
+// register allocator keeps values in registers instead of spilling them,
+// so longer live ranges from hoisted values don't cause extra stack traffic.
+bool hoistLoopInvariants(c::IRFunction& function) {
+    const auto& blocks = function.basicBlocks;
+    if (blocks.size() < 2) {
+        return false;
+    }
+
+    // Build label → index map.
+    std::unordered_map<std::string, std::size_t> labelToIdx;
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        labelToIdx[blocks[i].label] = i;
+    }
+
+    // Find back-edges: a successor at an index ≤ the source.
+    struct BackEdge { std::size_t from; std::size_t to; };
+    std::vector<BackEdge> backEdges;
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        auto successors = [&]() -> std::vector<std::string> {
+            std::vector<std::string> succ;
+            std::visit(
+                [&](const auto& t) {
+                    using T = std::decay_t<decltype(t)>;
+                    if constexpr (std::is_same_v<T, c::JumpInst>) {
+                        succ.push_back(t.targetLabel);
+                    } else if constexpr (std::is_same_v<T, c::BranchInst>) {
+                        succ.push_back(t.trueLabel);
+                        succ.push_back(t.falseLabel);
+                    }
+                },
+                blocks[i].terminator);
+            return succ;
+        }();
+        for (const std::string& s : successors) {
+            auto it = labelToIdx.find(s);
+            if (it != labelToIdx.end() && it->second <= i) {
+                backEdges.push_back({i, it->second});
+            }
+        }
+    }
+
+    if (backEdges.empty()) {
+        return false;
+    }
+
+    bool changed = false;
+    std::unordered_set<std::size_t> processedHeaders;
+
+    for (const BackEdge& be : backEdges) {
+        if (processedHeaders.count(be.to) != 0) {
+            continue;
+        }
+        processedHeaders.insert(be.to);
+
+        // Compute loop body: blocks reachable from header that can reach
+        // the back-edge source.
+        std::unordered_set<std::size_t> bodySet;
+        bodySet.insert(be.to);
+        std::vector<std::size_t> worklist{be.from};
+        std::unordered_set<std::size_t> visited{be.to};
+        while (!worklist.empty()) {
+            const std::size_t idx = worklist.back();
+            worklist.pop_back();
+            if (visited.count(idx) != 0) continue;
+            visited.insert(idx);
+            bodySet.insert(idx);
+            // Walk backwards through predecessors.
+            for (std::size_t p = 0; p < blocks.size(); ++p) {
+                auto succs = [&]() -> std::vector<std::string> {
+                    std::vector<std::string> s;
+                    std::visit(
+                        [&](const auto& t) {
+                            using T = std::decay_t<decltype(t)>;
+                            if constexpr (std::is_same_v<T, c::JumpInst>) {
+                                s.push_back(t.targetLabel);
+                            } else if constexpr (std::is_same_v<T, c::BranchInst>) {
+                                s.push_back(t.trueLabel);
+                                s.push_back(t.falseLabel);
+                            }
+                        },
+                        blocks[p].terminator);
+                    return s;
+                }();
+                for (const std::string& s : succs) {
+                    auto it = labelToIdx.find(s);
+                    if (it != labelToIdx.end() && it->second == idx) {
+                        worklist.push_back(p);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Identify globals stored inside the loop — their LoadGlobalInst
+        // results are NOT invariant (the value changes each iteration).
+        std::unordered_set<std::string> loopStoredGlobals;
+        for (std::size_t bi : bodySet) {
+            for (const c::Instruction& inst : blocks[bi].instructions) {
+                if (const auto* store = std::get_if<c::StoreGlobalInst>(&inst)) {
+                    loopStoredGlobals.insert(store->name);
+                }
+            }
+        }
+
+        // Compute vregs defined outside the loop and NOT redefined inside.
+        std::unordered_set<std::string> outsideDefs;
+        for (const c::Param& p : function.params) {
+            outsideDefs.insert(p.vreg);
+        }
+        for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+            if (bodySet.count(bi) != 0) continue;
+            for (const c::Instruction& inst : blocks[bi].instructions) {
+                const std::string d = defOf(inst);
+                if (!d.empty()) outsideDefs.insert(d);
+            }
+        }
+        // Remove any vreg that is ALSO defined inside the loop body (e.g.,
+        // loop counters that are initialized outside but updated inside).
+        for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+            if (bodySet.count(bi) == 0) continue;
+            for (const c::Instruction& inst : blocks[bi].instructions) {
+                const std::string d = defOf(inst);
+                if (!d.empty()) outsideDefs.erase(d);
+            }
+        }
+
+        // Collect invariant instructions across all loop body blocks.
+        struct Invariant { std::size_t blockIdx; std::size_t instIndex; };
+        std::vector<Invariant> invariants;
+        for (std::size_t bi : bodySet) {
+            const auto& blk = blocks[bi];
+            for (std::size_t ii = 0; ii < blk.instructions.size(); ++ii) {
+                const c::Instruction& inst = blk.instructions[ii];
+                const std::string d = defOf(inst);
+                if (d.empty()) continue;
+                if (!isPure(inst)) continue;
+                bool allOutside = true;
+                forEachUse(const_cast<c::Instruction&>(inst), [&](std::string& op) {
+                    if (outsideDefs.count(op) == 0) allOutside = false;
+                });
+                if (!allOutside) continue;
+                // LoadGlobal of a global that is stored inside the loop is
+                // not invariant — the value changes each iteration.
+                if (const auto* lg = std::get_if<c::LoadGlobalInst>(&inst)) {
+                    if (loopStoredGlobals.count(lg->name) != 0) continue;
+                }
+                // Success — the instruction is invariant.
+                // Update outsideDefs so subsequent invariant instructions
+                // that depend on this one are also recognised.
+                outsideDefs.insert(d);
+                invariants.push_back({bi, ii});
+            }
+        }
+
+        if (invariants.empty()) continue;
+
+        // Create preheader block and move invariant instructions into it.
+        c::BasicBlock preheader;
+        preheader.label = function.basicBlocks[be.to].label + "_preheader";
+        for (const auto& inv : invariants) {
+            preheader.instructions.push_back(
+                std::move(function.basicBlocks[inv.blockIdx].instructions[inv.instIndex]));
+        }
+        preheader.terminator = c::JumpInst{function.basicBlocks[be.to].label};
+
+        // Remove invariant instructions from their original blocks.
+        std::vector<bool> keepFlags;
+        for (std::size_t bi : bodySet) {
+            auto& binsts = function.basicBlocks[bi].instructions;
+            keepFlags.assign(binsts.size(), true);
+            for (const auto& inv : invariants) {
+                if (inv.blockIdx == bi) keepFlags[inv.instIndex] = false;
+            }
+            std::vector<c::Instruction> newInsts;
+            newInsts.reserve(binsts.size());
+            for (std::size_t ii = 0; ii < binsts.size(); ++ii) {
+                if (keepFlags[ii]) newInsts.push_back(std::move(binsts[ii]));
+            }
+            binsts = std::move(newInsts);
+        }
+
+        // Reroute non-loop predecessors of the header to the preheader.
+        for (std::size_t bi = 0; bi < function.basicBlocks.size(); ++bi) {
+            if (bodySet.count(bi) != 0) continue; // loop-internal edge
+            std::visit(
+                [&](auto& t) {
+                    using T = std::decay_t<decltype(t)>;
+                    if constexpr (std::is_same_v<T, c::JumpInst>) {
+                        if (t.targetLabel == function.basicBlocks[be.to].label) {
+                            t.targetLabel = preheader.label;
+                        }
+                    } else if constexpr (std::is_same_v<T, c::BranchInst>) {
+                        if (t.trueLabel == function.basicBlocks[be.to].label) {
+                            t.trueLabel = preheader.label;
+                        }
+                        if (t.falseLabel == function.basicBlocks[be.to].label) {
+                            t.falseLabel = preheader.label;
+                        }
+                    }
+                },
+                function.basicBlocks[bi].terminator);
+        }
+
+        // Insert preheader before the header block.
+        function.basicBlocks.insert(
+            function.basicBlocks.begin() + static_cast<std::ptrdiff_t>(be.to),
+            std::move(preheader));
+
+        changed = true;
+        break; // block indices shift; let caller re-run LICM for other loops
+    }
+
+    return changed;
+}
+
 } // namespace
 
 void IrOptimizer::optimize(c::IRFunction& function) {
     // Tail-recursion elimination first: the resulting CopyInsts and
     // unreachable blocks are cleaned up by subsequent passes.
     if (eliminateTailRecursion(function)) {
-        // Run one round of simplification + DCE on the transformed function
-        // so the copy-propagated param assignments and dead call args are
-        // cleaned out before the main pass.
         for (c::BasicBlock& block : function.basicBlocks) {
             simplifyBlock(block);
         }
         deadCodeElim(function);
     }
 
-    constexpr int kMaxIterations = 8;
+    // LICM before the main simplification loop so folded constants and
+    // hoisted addresses are available for subsequent propagation + DCE.
+    if (hoistLoopInvariants(function)) {
+        for (c::BasicBlock& block : function.basicBlocks) {
+            simplifyBlock(block);
+        }
+        deadCodeElim(function);
+    }
+
+    constexpr int kMaxIterations = 12;
     for (int iter = 0; iter < kMaxIterations; ++iter) {
         bool changed = false;
         for (c::BasicBlock& block : function.basicBlocks) {
             changed |= simplifyBlock(block);
         }
         changed |= deadCodeElim(function);
+        // LICM may expose new folding/propagation opportunities.
+        changed |= hoistLoopInvariants(function);
         if (!changed) {
             break;
         }
