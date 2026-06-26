@@ -1,7 +1,6 @@
-# Build directories
-build/
-build-tests/
-cmake-build-*/
+# Build directories (root-qualified)
+/build*/
+/cmake-build-*/
 
 # IDE
 .vscode/

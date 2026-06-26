@@ -24,12 +24,16 @@ build-tests: configure-tests
 frontend-test: build-tests
   {{build_tests_dir}}/toyc-frontend-tests
 
+# Run sema tests
+sema-test: build-tests
+  {{build_tests_dir}}/toyc-sema-tests
+
 # Run IR tests
 ir-test: build-tests
   {{build_tests_dir}}/toyc-ir-tests
 
 # Run all tests
-test: frontend-test ir-test
+test: frontend-test sema-test ir-test
 
 # Clean build directories
 clean:
@@ -44,4 +48,5 @@ coverage:
   cmake -S . -B {{build_tests_dir}} -DTOYC_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage"
   cmake --build {{build_tests_dir}} -j
   {{build_tests_dir}}/toyc-frontend-tests
+  {{build_tests_dir}}/toyc-sema-tests
   {{build_tests_dir}}/toyc-ir-tests

@@ -8,8 +8,8 @@ ToyC 语言编译器 — 武汉大学编译原理课程实践项目。
 
 ## 当前状态
 
-**P2 — 语法分析器**：Lexer + Parser + AST 已实现，支持 `--dump-tokens` 和 `--dump-ast` 调试模式。
-当前尚未实现语义分析、IR 生成或汇编生成功能。
+**P3 — 语义分析器**：Lexer + Parser + AST + 语义分析已实现，支持 `--dump-tokens`、`--dump-ast`、`--dump-sema` 调试模式。
+当前尚未实现 IR 生成或汇编生成功能。
 
 ## 接口
 
@@ -46,6 +46,9 @@ cmake --build build -j
 
 # 语法分析调试（AST dump 到 stderr）
 ./build/toycc --dump-ast < input.tc
+
+# 语义分析调试（SemanticModel dump 到 stderr）
+./build/toycc --dump-sema < input.tc
 
 # 编译（当前未实现）
 ./build/toycc < input.tc > output.s

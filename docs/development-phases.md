@@ -23,7 +23,7 @@
 - Parser error recovery (no infinite loops).
 - Comprehensive parser tests (193 frontend tests passing).
 
-## P3: Sema + Constant Evaluation
+## P3: Sema + Constant Evaluation ✅
 
 - Symbol table with scopes (block nesting).
 - Type checking (int vs void, function signatures).
@@ -31,6 +31,8 @@
 - Short-circuit evaluation for `&&` and `||`.
 - All `int` functions must return on every path.
 - `return -2147483648` boundary handling.
+- `--dump-sema` debug mode.
+- 323 total tests passing (193 frontend + 112 sema + 18 IR).
 
 ## P4: Slot IR + CFG
 

@@ -46,6 +46,9 @@ TOYC_DEFINE_ID(GlobalId)
 /// Virtual register identifier (MIR).
 TOYC_DEFINE_ID(VRegId)
 
+/// Scope identifier (semantic analysis).
+TOYC_DEFINE_ID(ScopeId)
+
 #undef TOYC_DEFINE_ID
 
 } // namespace toyc
@@ -61,4 +64,5 @@ template <> struct hash<toyc::BlockId>    { size_t operator()(const toyc::BlockI
 template <> struct hash<toyc::FunctionId> { size_t operator()(const toyc::FunctionId& id) const noexcept { return hash<uint32_t>{}(id.value); } };
 template <> struct hash<toyc::GlobalId>   { size_t operator()(const toyc::GlobalId& id)   const noexcept { return hash<uint32_t>{}(id.value); } };
 template <> struct hash<toyc::VRegId>     { size_t operator()(const toyc::VRegId& id)     const noexcept { return hash<uint32_t>{}(id.value); } };
+template <> struct hash<toyc::ScopeId>    { size_t operator()(const toyc::ScopeId& id)    const noexcept { return hash<uint32_t>{}(id.value); } };
 } // namespace std

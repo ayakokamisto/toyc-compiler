@@ -44,11 +44,15 @@ toyc_add_library(toyc_frontend
 )
 target_link_libraries(toyc_frontend PUBLIC toyc_support)
 
-# sema → support
+# sema → frontend
 toyc_add_library(toyc_sema
-  src/sema/scaffold.cpp
+  src/sema/semantic_model.cpp
+  src/sema/scope.cpp
+  src/sema/constant_evaluator.cpp
+  src/sema/semantic_analyzer.cpp
+  src/sema/semantic_model_printer.cpp
 )
-target_link_libraries(toyc_sema PUBLIC toyc_support)
+target_link_libraries(toyc_sema PUBLIC toyc_frontend)
 
 # ir → support
 toyc_add_library(toyc_ir
@@ -125,4 +129,19 @@ if(TOYC_BUILD_TESTS)
     toyc_ir
   )
   toyc_set_warnings(toyc-ir-tests)
+
+  add_executable(toyc-sema-tests
+    tests/sema/scope_test.cpp
+    tests/sema/symbol_test.cpp
+    tests/sema/constant_evaluator_test.cpp
+    tests/sema/semantic_analyzer_test.cpp
+    tests/sema/semantic_error_test.cpp
+    tests/sema/control_flow_test.cpp
+    tests/sema/driver_dump_sema_test.cpp
+  )
+  target_link_libraries(toyc-sema-tests PRIVATE
+    GTest::gtest_main
+    toyc_sema
+  )
+  toyc_set_warnings(toyc-sema-tests)
 endif()

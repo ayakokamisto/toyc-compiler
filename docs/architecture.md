@@ -74,6 +74,23 @@ Source (stdin)
 | `InstId` | IR | Instruction identifier (for passes that need to reference instructions). |
 | `SourceId` | Frontend | Source file identifier (for multi-file support, future). |
 
+## Operator Precedence Note
+
+The ToyC grammar in `任务要求.md` uses a compressed notation where `RelExpr` includes
+all comparison operators (`< > <= >= == !=`) at the same precedence level. However,
+the **semantic constraints** section states that "运算符的优先级、结合性和计算规则等与 C 语言一致"
+(operator precedence, associativity, and evaluation rules are consistent with C).
+
+Therefore, the parser implements C-standard precedence where relational operators
+(`< <= > >=`) bind tighter than equality operators (`== !=`):
+
+```
+2 == 3 < 4  →  2 == (3 < 4)  →  Equal(2, Less(3, 4))
+```
+
+This decision is validated by parser tests including
+`RelationEqualPrecedence_2_eq_3_lt_4`.
+
 ## Implementation Order
 
 1. **P0**: Project scaffold (this phase)
