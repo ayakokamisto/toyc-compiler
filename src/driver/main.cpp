@@ -6,6 +6,8 @@
 #include "toyc/frontend/ast.h"
 #include "toyc/frontend/lexer.h"
 #include "toyc/frontend/parser.h"
+#include "toyc/sema/semantic_analyzer.h"
+#include "toyc/sema/semantic_model.h"
 #include "toyc/support/diagnostics.h"
 
 #include <iostream>
@@ -16,12 +18,12 @@ int main(int argc, char* argv[]) {
   auto opts = toyc::CompilerOptions::parse(argc, argv);
 
   if (opts.help) {
-    toyc::CompilerOptions::printUsage();
+    toyc::CompilerOptions::printUsage(std::cout);
     return 0;
   }
 
   if (opts.hasCommandLineError) {
-    toyc::CompilerOptions::printUsage();
+    toyc::CompilerOptions::printUsage(std::cerr);
     return 1;
   }
 
@@ -75,8 +77,47 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  // Normal compilation pipeline (P0 placeholder).
-  // Only run pipeline if lexer and parser succeed.
+  // --dump-sema: lex, parse, analyze, dump SemanticModel to stderr, then exit.
+  if (opts.dumpSema) {
+    toyc::DiagnosticEngine diag;
+    toyc::Lexer lexer(source, diag);
+    auto tokens = lexer.tokenize();
+
+    if (diag.hasErrors()) {
+      for (const auto& d : diag.diagnostics()) {
+        std::cerr << d.location.line << ":" << d.location.column
+                  << ": error: " << d.message << "\n";
+      }
+      return 1;
+    }
+
+    toyc::Parser parser(tokens, diag);
+    auto ast = parser.parse();
+
+    if (diag.hasErrors()) {
+      for (const auto& d : diag.diagnostics()) {
+        std::cerr << d.location.line << ":" << d.location.column
+                  << ": error: " << d.message << "\n";
+      }
+      return 1;
+    }
+
+    toyc::SemanticAnalyzer sema(diag);
+    auto model = sema.analyze(*ast);
+
+    if (diag.hasErrors()) {
+      for (const auto& d : diag.diagnostics()) {
+        std::cerr << d.location.line << ":" << d.location.column
+                  << ": error: " << d.message << "\n";
+      }
+      return 1;
+    }
+
+    toyc::dumpSema(*model, *ast, std::cerr);
+    return 0;
+  }
+
+  // Normal compilation pipeline.
   {
     toyc::DiagnosticEngine diag;
     toyc::Lexer lexer(source, diag);
@@ -92,6 +133,17 @@ int main(int argc, char* argv[]) {
 
     toyc::Parser parser(tokens, diag);
     auto ast = parser.parse();
+
+    if (diag.hasErrors()) {
+      for (const auto& d : diag.diagnostics()) {
+        std::cerr << d.location.line << ":" << d.location.column
+                  << ": error: " << d.message << "\n";
+      }
+      return 1;
+    }
+
+    toyc::SemanticAnalyzer sema(diag);
+    auto model = sema.analyze(*ast);
 
     if (diag.hasErrors()) {
       for (const auto& d : diag.diagnostics()) {
