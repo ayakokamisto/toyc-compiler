@@ -122,8 +122,23 @@ computeFoldableImmediateConsts(const c::IRFunction& function) {
                         } else {
                             disqualify(i.src2);
                         }
-                    } else if constexpr (std::is_same_v<T, c::MulInst> ||
-                                         std::is_same_v<T, c::DivInst> ||
+                    } else if constexpr (std::is_same_v<T, c::MulInst>) {
+                        // A constant multiplier is eligible only if it can be
+                        // strength-reduced (power of two or small-constant
+                        // expandable to shift+add).
+                        auto mulEligible = [&](const std::string& op) {
+                            const auto it = constValue.find(op);
+                            if (it == constValue.end()) return false;
+                            const std::int32_t v = it->second;
+                            if (v <= 0) return false;
+                            // power of two
+                            if ((v & (v - 1)) == 0) return true;
+                            // small constants with shift+add expansions
+                            return v == 3 || v == 5 || v == 6 || v == 9 || v == 10;
+                        };
+                        if (mulEligible(i.src1)) noteUse(i.src1); else disqualify(i.src1);
+                        if (mulEligible(i.src2)) noteUse(i.src2); else disqualify(i.src2);
+                    } else if constexpr (std::is_same_v<T, c::DivInst> ||
                                          std::is_same_v<T, c::ModInst> ||
                                          std::is_same_v<T, c::LeInst> ||
                                          std::is_same_v<T, c::GtInst> ||

@@ -234,6 +234,128 @@ bool InstructionSelector::tryEmitImmediateBinaryOp(std::string_view dst,
     return true;
 }
 
+namespace {
+
+// Returns floor(log2(n)) if n is a positive power of two, else -1.
+int ilog2(std::int32_t n) {
+    if (n <= 0) return -1;
+    int log = 0;
+    while (n > 1) {
+        if (n & 1) return -1;
+        n >>= 1;
+        ++log;
+    }
+    return log;
+}
+
+bool isPowerOfTwo(std::int32_t n) {
+    return n > 0 && ilog2(n) >= 0;
+}
+
+} // namespace
+
+bool InstructionSelector::tryEmitStrengthReducedMul(std::string_view dst,
+                                                     std::string_view src,
+                                                     const std::int32_t multiplier) {
+    if (!enableOpt_ || foldableConst(src).has_value()) {
+        return false;
+    }
+    if (const int shift = ilog2(multiplier); shift >= 0 && shift <= 11) {
+        // *2^k → slli
+        if (shift == 1) return false; // *2 already handled as add x,x by IrOptimizer
+        if (const std::optional<std::string_view> dstPhys = physicalReg(dst)) {
+            if (const std::optional<std::string_view> srcPhys = physicalReg(src)) {
+                emitter_.instruction("slli", {*dstPhys, *srcPhys, imm(shift)});
+                vregCache_.forgetVReg(dst);
+                return true;
+            }
+            loadVReg(*dstPhys, src);
+            emitter_.instruction("slli", {*dstPhys, *dstPhys, imm(shift)});
+            vregCache_.forgetVReg(dst);
+            return true;
+        }
+        vregCache_.clobberRegister("t0");
+        if (const std::optional<std::string_view> srcPhys = physicalReg(src)) {
+            emitter_.instruction("slli", {"t0", *srcPhys, imm(shift)});
+        } else {
+            loadVReg("t0", src);
+            emitter_.instruction("slli", {"t0", "t0", imm(shift)});
+        }
+        storeVReg(dst, "t0");
+        return true;
+    }
+
+    // Small-constant expansions: shift + add/sub. Uses up to three temps;
+    // the source register is NOT clobbered (we copy it to a safe slot if it
+    // overlaps with the scratch registers we use for intermediate values).
+    auto emitSR = [&](std::int32_t s1, std::int32_t s2, bool add) {
+        vregCache_.clobberRegister("t0");
+        vregCache_.clobberRegister("t2");
+        vregCache_.clobberRegister("t3");
+        auto srcReg = physicalReg(src);
+        const bool srcConflicts = srcReg && (*srcReg == "t0" || *srcReg == "t2" || *srcReg == "t3");
+        if (srcConflicts) {
+            // Copy source to t1 so we can use t0/t2/t3 as scratch freely.
+            loadVReg("t1", src);
+            srcReg = "t1";
+            vregCache_.clobberRegister("t1");
+        }
+        if (srcReg) {
+            emitter_.instruction("slli", {"t3", *srcReg, imm(s1)});
+            emitter_.instruction("slli", {"t2", *srcReg, imm(s2)});
+            emitter_.instruction(add ? "add" : "sub", {"t0", "t3", "t2"});
+        } else {
+            loadVReg("t0", src);
+            loadVReg("t2", src);
+            emitter_.instruction("slli", {"t0", "t0", imm(s1)});
+            emitter_.instruction("slli", {"t2", "t2", imm(s2)});
+            emitter_.instruction(add ? "add" : "sub", {"t0", "t0", "t2"});
+        }
+        storeVReg(dst, "t0");
+    };
+
+    // *3 = (x << 1) + x  →  slli t0, src, 1 ; add t0, t0, src
+    // *5 = (x << 2) + x
+    // *6 = (x << 2) + (x << 1)
+    // *9 = (x << 3) + x
+    // *10 = (x << 3) + (x << 1)
+    // For *3, *5, *9: x*K = (x << shift) + x.  Needs both shifted and
+    // unshifted source without clobbering it.
+    auto emitShiftAdd = [&](int shift) -> bool {
+        vregCache_.clobberRegister("t0");
+        const auto srcPhys = physicalReg(src);
+        if (srcPhys && *srcPhys != "t0") {
+            // Source has a physical register that won't conflict with t0.
+            emitter_.instruction("slli", {"t0", *srcPhys, imm(shift)});
+            emitter_.instruction("add", {"t0", "t0", *srcPhys});
+        } else if (srcPhys && *srcPhys == "t0") {
+            // Source IS t0; copy to t1, then shift + add.
+            loadVReg("t1", src);
+            vregCache_.clobberRegister("t1");
+            emitter_.instruction("slli", {"t0", "t1", imm(shift)});
+            emitter_.instruction("add", {"t0", "t0", "t1"});
+        } else {
+            // Source on stack; need two loads.
+            loadVReg("t0", src);
+            loadVReg("t1", src);
+            vregCache_.clobberRegister("t1");
+            emitter_.instruction("slli", {"t0", "t0", imm(shift)});
+            emitter_.instruction("add", {"t0", "t0", "t1"});
+        }
+        storeVReg(dst, "t0");
+        return true;
+    };
+
+    switch (multiplier) {
+    case 3: return emitShiftAdd(1);
+    case 5: return emitShiftAdd(2);
+    case 6: emitSR(2, 1, true); return true;
+    case 9: return emitShiftAdd(3);
+    case 10: emitSR(3, 1, true); return true;
+    default: return false;
+    }
+}
+
 void InstructionSelector::emitBranchTo(std::string_view functionName,
                                        std::string_view trueLabel,
                                        std::string_view falseLabel,
@@ -339,6 +461,15 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 }
                 emitBinaryOp(inst.dst, inst.src1, inst.src2, "sub");
             } else if constexpr (std::is_same_v<Inst, contract::MulInst>) {
+                // MulInst by constant already folds to AddInst (*2) or slli
+                // in IrOptimizer; strength reduction here handles the
+                // remaining constant-multiply cases at selection time.
+                if (const auto v = foldableConst(inst.src2)) {
+                    if (tryEmitStrengthReducedMul(inst.dst, inst.src1, *v)) return;
+                }
+                if (const auto v = foldableConst(inst.src1)) {
+                    if (tryEmitStrengthReducedMul(inst.dst, inst.src2, *v)) return;
+                }
                 emitBinaryOp(inst.dst, inst.src1, inst.src2, "mul");
             } else if constexpr (std::is_same_v<Inst, contract::DivInst>) {
                 emitBinaryOp(inst.dst, inst.src1, inst.src2, "div");
@@ -619,7 +750,13 @@ void InstructionSelector::emitTerminator(const contract::Terminator& terminator,
         [&](const auto& inst) {
             using Inst = std::decay_t<decltype(inst)>;
             if constexpr (std::is_same_v<Inst, contract::JumpInst>) {
-                emitter_.instruction("j", {blockLabel(functionName, inst.targetLabel)});
+                // Jumps to "entry" from a non-entry block are tail-recursion
+                // back-edges — redirect past the prologue to the body label.
+                const std::string target =
+                    (inst.targetLabel == "entry")
+                        ? blockLabel(functionName, "tail_entry")
+                        : blockLabel(functionName, inst.targetLabel);
+                emitter_.instruction("j", {target});
             } else if constexpr (std::is_same_v<Inst, contract::BranchInst>) {
                 loadVReg("t0", inst.cond);
                 emitter_.instruction("bnez", {"t0", blockLabel(functionName, inst.trueLabel)});

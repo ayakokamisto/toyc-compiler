@@ -52,6 +52,11 @@ private:
                                                  std::string_view src,
                                                  std::int32_t imm,
                                                  std::string_view immMnemonic);
+    // Strength-reduce MulInst by a small constant: slli for powers of two,
+    // shift+add for common small multipliers (3/5/6/9/10).
+    [[nodiscard]] bool tryEmitStrengthReducedMul(std::string_view dst,
+                                                  std::string_view src,
+                                                  std::int32_t multiplier);
     [[nodiscard]] bool tryEmitPhysicalBinaryOp(std::string_view dst,
                                                std::string_view src1,
                                                std::string_view src2,

@@ -343,9 +343,272 @@ bool deadCodeElim(c::IRFunction& function) {
     return changed;
 }
 
+// Copy coalescing: when CopyInst{dst, src} follows an instruction whose only
+// output is `src`, and `src` has no other uses (not live-out, not read later
+// in this block, not consumed by the terminator), retarget the preceding
+// instruction to write directly to `dst` and drop the copy. This eliminates
+// the pervasive `op temp, a, b; mv var, temp` pattern from every assignment.
+bool coalesceCopies(c::IRFunction& function) {
+    const VRegAnalysis analysis = analyzeVRegs(function);
+    bool changed = false;
+
+    for (c::BasicBlock& block : function.basicBlocks) {
+        if (block.instructions.size() < 2) {
+            continue;
+        }
+
+        // Precompute, for each instruction, which vregs are read by later
+        // instructions and by the terminator. Walk backwards.
+        std::set<std::string, std::less<>> laterUses;
+        forEachUse(block.terminator, [&](std::string& operand) { laterUses.insert(operand); });
+
+        std::vector<bool> copyIsDead(block.instructions.size(), false);
+
+        for (std::size_t ri = block.instructions.size(); ri > 0; --ri) {
+            const std::size_t i = ri - 1;
+            c::Instruction& inst = block.instructions[i];
+            const std::string dst = defOf(inst);
+
+            // Is this a CopyInst whose source is defined by the previous
+            // instruction and whose source has no other readers?
+            if (const auto* copy = std::get_if<c::CopyInst>(&inst)) {
+                if (i > 0 && !dst.empty()) {
+                    const std::string& src = copy->src;
+                    const c::Instruction& prev = block.instructions[i - 1];
+                    if (defOf(prev) == src) {
+                        // src must NOT be read by anything after this copy
+                        if (laterUses.find(src) == laterUses.end()) {
+                            // Also check live-out
+                            const auto outIt = analysis.liveOuts.find(block.label);
+                            const auto& liveOut = (outIt == analysis.liveOuts.end())
+                                ? std::set<std::string, std::less<>>{}
+                                : outIt->second;
+                            if (liveOut.find(src) == liveOut.end()) {
+                                // Safe to coalesce. Mark copy for deletion;
+                                // the prev instruction's dst will be renamed
+                                // when we rebuild the instruction list.
+                                copyIsDead[i] = true;
+                                changed = true;
+                                // The copy's dst now replaces prev's dst as
+                                // the "current" definition for later-use
+                                // tracking. We already recorded laterUses
+                                // before this point, so this doesn't affect
+                                // correctness — it's just for the next
+                                // iteration of the backward scan.
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update `laterUses` for the next (earlier) instruction: add this
+            // instruction's operands, remove its def.
+            if (!dst.empty()) {
+                laterUses.erase(dst);
+            }
+            forEachUse(inst, [&](std::string& operand) { laterUses.insert(operand); });
+        }
+
+        // Second forward pass: rebuild the instruction list with coalescing
+        // applied (retarget the prev instruction, drop dead copies).
+        if (changed) {
+            std::vector<c::Instruction> kept;
+            kept.reserve(block.instructions.size());
+            for (std::size_t i = 0; i < block.instructions.size(); ++i) {
+                if (copyIsDead[i]) {
+                    // The preceding instruction (kept.back()) defined the
+                    // copy's source. Retarget it to the copy's destination.
+                    const auto& copy = std::get<c::CopyInst>(block.instructions[i]);
+                    const std::string& newDst = copy.dst;
+                    std::visit(
+                        [&](auto& prevInst) {
+                            using T = std::decay_t<decltype(prevInst)>;
+                            if constexpr (std::is_same_v<T, c::ConstInst>) {
+                                prevInst.dst = newDst;
+                            } else if constexpr (std::is_same_v<T, c::CopyInst>) {
+                                prevInst.dst = newDst;
+                            } else if constexpr (std::is_same_v<T, c::LoadGlobalInst>) {
+                                prevInst.dst = newDst;
+                            } else if constexpr (std::is_same_v<T, c::CallInst>) {
+                                prevInst.dst = newDst;
+                            } else if constexpr (std::is_same_v<T, c::AddInst> ||
+                                                 std::is_same_v<T, c::SubInst> ||
+                                                 std::is_same_v<T, c::MulInst> ||
+                                                 std::is_same_v<T, c::DivInst> ||
+                                                 std::is_same_v<T, c::ModInst>) {
+                                prevInst.dst = newDst;
+                            } else if constexpr (std::is_same_v<T, c::NegInst> ||
+                                                 std::is_same_v<T, c::LNotInst>) {
+                                prevInst.dst = newDst;
+                            } else if constexpr (std::is_same_v<T, c::EqInst> ||
+                                                 std::is_same_v<T, c::NeInst> ||
+                                                 std::is_same_v<T, c::LtInst> ||
+                                                 std::is_same_v<T, c::LeInst> ||
+                                                 std::is_same_v<T, c::GtInst> ||
+                                                 std::is_same_v<T, c::GeInst>) {
+                                prevInst.dst = newDst;
+                            }
+                        },
+                        kept.back());
+                    continue; // drop the copy
+                }
+                kept.push_back(std::move(block.instructions[i]));
+            }
+            block.instructions = std::move(kept);
+        }
+    }
+
+    return changed;
+}
+
+// Tail-recursion elimination: turn a self-recursive call at the end of a
+// block (immediately followed by ReturnInst) into parameter-copy assignments
+// and a jump to the function's entry-body label. The entry-body label
+// (functionName__body) sits after the prologue and parameter landing, so the
+// transformed branch skips the stack-frame setup and re-enters the function
+// body with the new argument values.
+bool eliminateTailRecursion(c::IRFunction& function) {
+    bool changed = false;
+    const std::string& funcName = function.name;
+
+    for (c::BasicBlock& block : function.basicBlocks) {
+        auto& insts = block.instructions;
+        if (insts.empty()) {
+            continue;
+        }
+
+        c::Instruction& last = insts.back();
+        bool isTail = false;
+        std::vector<std::string> callArgs;
+
+        if (const auto* call = std::get_if<c::CallInst>(&last)) {
+            if (call->functionName == funcName) {
+                const auto* ret = std::get_if<c::ReturnInst>(&block.terminator);
+                if (ret != nullptr && ret->src.has_value() && *ret->src == call->dst) {
+                    isTail = true;
+                    callArgs = call->args;
+                }
+            }
+        } else if (const auto* callVoid = std::get_if<c::CallVoidInst>(&last)) {
+            if (callVoid->functionName == funcName) {
+                const auto* ret = std::get_if<c::ReturnInst>(&block.terminator);
+                if (ret != nullptr && !ret->src.has_value()) {
+                    isTail = true;
+                    callArgs = callVoid->args;
+                }
+            }
+        }
+
+        if (!isTail) {
+            continue;
+        }
+
+        // Remove the tail call.
+        insts.pop_back();
+
+        // Directly retarget the argument-defining instructions (when the
+        // arg is produced by a single instruction in this block) to write
+        // to the corresponding parameter vreg, avoiding intermediate copies.
+        //
+        // Important ordering constraint: when two arg-defining instructions
+        // both read the same parameter vreg and one of them writes it, the
+        // instruction that reads must execute BEFORE the one that writes
+        // (otherwise the read gets the wrong, post-update value).
+        struct Retarget { std::size_t index; std::string paramVreg; };
+        std::vector<Retarget> retargets;
+        for (std::size_t i = 0; i < callArgs.size() && i < function.params.size(); ++i) {
+            const std::string& arg = callArgs[i];
+            const std::string& paramVreg = function.params[i].vreg;
+            if (arg == paramVreg) {
+                continue;
+            }
+            bool found = false;
+            for (std::size_t j = 0; j < insts.size(); ++j) {
+                if (defOf(insts[j]) == arg) {
+                    retargets.push_back({j, paramVreg});
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                insts.push_back(c::CopyInst{paramVreg, arg});
+            }
+        }
+
+        // Reorder: a retargeted instruction that reads param V should execute
+        // BEFORE any retargeted instruction that writes V (the read needs the
+        // old value). Use simple bubble — retargets typically ≤ 3 elements.
+        bool reordered = true;
+        while (reordered) {
+            reordered = false;
+            for (std::size_t i = 0; i + 1 < retargets.size(); ++i) {
+                // right reads left's write target? → swap so right executes first
+                bool rightReadsLeftWrite = [&]() {
+                    bool reads = false;
+                    forEachUse(const_cast<c::Instruction&>(insts[retargets[i + 1].index]),
+                               [&](std::string& op) {
+                                   if (op == retargets[i].paramVreg) reads = true;
+                               });
+                    return reads;
+                }();
+                if (rightReadsLeftWrite) {
+                    std::swap(retargets[i], retargets[i + 1]);
+                    std::iter_swap(
+                        insts.begin() + static_cast<std::ptrdiff_t>(retargets[i].index),
+                        insts.begin() + static_cast<std::ptrdiff_t>(retargets[i + 1].index));
+                    // Fix up indices after the instruction swap.
+                    std::swap(retargets[i].index, retargets[i + 1].index);
+                    reordered = true;
+                }
+            }
+        }
+
+        // Apply retargets.
+        for (const auto& rt : retargets) {
+            std::visit(
+                [&](auto& prev) {
+                    using T = std::decay_t<decltype(prev)>;
+                    if constexpr (std::is_same_v<T, c::ConstInst> || std::is_same_v<T, c::CopyInst> ||
+                                  std::is_same_v<T, c::LoadGlobalInst> || std::is_same_v<T, c::CallInst> ||
+                                  std::is_same_v<T, c::AddInst> || std::is_same_v<T, c::SubInst> ||
+                                  std::is_same_v<T, c::MulInst> || std::is_same_v<T, c::DivInst> ||
+                                  std::is_same_v<T, c::ModInst> || std::is_same_v<T, c::NegInst> ||
+                                  std::is_same_v<T, c::LNotInst> || std::is_same_v<T, c::EqInst> ||
+                                  std::is_same_v<T, c::NeInst> || std::is_same_v<T, c::LtInst> ||
+                                  std::is_same_v<T, c::LeInst> || std::is_same_v<T, c::GtInst> ||
+                                  std::is_same_v<T, c::GeInst>) {
+                        prev.dst = rt.paramVreg;
+                    }
+                },
+                insts[rt.index]);
+        }
+
+        // Replace the return terminator with a jump to the entry block.
+        // VRegAnalysis & DCE can track liveness across this successor edge.
+        // The backend redirects "entry" jumps past the prologue (to the
+        // tail_entry label) automatically.
+        block.terminator = c::JumpInst{"entry"};
+        changed = true;
+    }
+
+    return changed;
+}
+
 } // namespace
 
 void IrOptimizer::optimize(c::IRFunction& function) {
+    // Tail-recursion elimination first: the resulting CopyInsts and
+    // unreachable blocks are cleaned up by subsequent passes.
+    if (eliminateTailRecursion(function)) {
+        // Run one round of simplification + DCE on the transformed function
+        // so the copy-propagated param assignments and dead call args are
+        // cleaned out before the main pass.
+        for (c::BasicBlock& block : function.basicBlocks) {
+            simplifyBlock(block);
+        }
+        deadCodeElim(function);
+    }
+
     constexpr int kMaxIterations = 8;
     for (int iter = 0; iter < kMaxIterations; ++iter) {
         bool changed = false;
@@ -357,6 +620,9 @@ void IrOptimizer::optimize(c::IRFunction& function) {
             break;
         }
     }
+    // After DCE, coalesce copies to eliminate redundant mv instructions in
+    // assignment chains.
+    coalesceCopies(function);
 }
 
 void IrOptimizer::optimize(c::IRModule& module) {
