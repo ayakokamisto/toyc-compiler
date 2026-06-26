@@ -1,0 +1,5 @@
+const int N = 42;
+int x = 1 + 2;
+int main() {
+  return x;
+}

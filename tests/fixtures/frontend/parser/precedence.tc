@@ -1,0 +1,4 @@
+int main() {
+  int x = a || b && c == d + e * f;
+  return x;
+}
