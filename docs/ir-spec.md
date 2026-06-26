@@ -7,33 +7,49 @@ ToyC uses a two-phase IR:
 1. **Canonical Slot IR** — mutable variables as slots, easy to generate from AST.
 2. **SSA IR** — after Mem2Reg, slots are promoted to SSA values with phi nodes.
 
-## Canonical Slot IR
+## Canonical Slot IR (P4 — implemented)
 
 ### Slot Operations
 
 | Instruction | Operands | Description |
 |-------------|----------|-------------|
-| `slot.load` | `SlotId` | Load value from a mutable slot. |
-| `slot.store` | `SlotId`, `Value` | Store value to a mutable slot. |
-| `global.load` | `GlobalId` | Load value from a global variable. |
-| `global.store` | `GlobalId`, `Value` | Store value to a global variable. |
+| `load.slot` | `SlotId` | Load value from a mutable slot. |
+| `store.slot` | `SlotId`, `Value` | Store value to a mutable slot. |
+| `load.global` | `GlobalId` | Load value from a global variable. |
+| `store.global` | `GlobalId`, `Value` | Store value to a global variable. |
 
 ### Arithmetic / Logic
 
 | Instruction | Operands | Description |
 |-------------|----------|-------------|
 | `unary` | `UnaryOp`, `Value` | Unary operation (neg, not). |
-| `binary` | `BinaryOp`, `Value`, `Value` | Binary operation (add, sub, mul, div, mod, and, or). |
-| `cmp` | `CmpPred`, `Value`, `Value` | Comparison (eq, ne, lt, le, gt, ge). |
+| `binary` | `BinaryOp`, `Value`, `Value` | Binary operation (add, sub, mul, div, mod). |
+| `cmp` | `CmpPred`, `Value`, `Value` | Comparison (eq, ne, lt, le, gt, ge). Result is 0 or 1. |
 
 ### Control Flow
 
 | Instruction | Operands | Description |
 |-------------|----------|-------------|
 | `br` | `BlockId` | Unconditional branch. |
-| `condbr` | `Value`, `BlockId`, `BlockId` | Conditional branch. |
+| `condbr` | `Value`, `BlockId`, `BlockId` | Conditional branch (non-zero → true, zero → false). |
 | `ret` | `Value?` | Return (optional value for int functions). |
 | `call` | `FunctionId`, `Value*` | Function call. |
+
+### Slot Kinds
+
+| Kind | Description |
+|------|-------------|
+| `Parameter` | Created for a function parameter. |
+| `LocalVariable` | Created for a local `var` declaration. |
+| `Temporary` | Created for short-circuit boolean materialization. |
+
+### Global Kinds
+
+| Kind | Description |
+|------|-------------|
+| `Variable` | Mutable global variable. |
+| `Constant` | Compile-time constant (directly materialized). |
+| `InternalGuard` | Internal guard for runtime initialization. |
 
 ## SSA IR
 

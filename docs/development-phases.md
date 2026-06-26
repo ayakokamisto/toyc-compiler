@@ -34,13 +34,19 @@
 - `--dump-sema` debug mode.
 - 323 total tests passing (193 frontend + 112 sema + 18 IR).
 
-## P4: Slot IR + CFG
+## P4: Slot IR + CFG ✅
 
-- AST → Canonical Slot IR generation.
-- `slot.load` / `slot.store` for local variables.
-- `global.load` / `global.store` for globals.
-- CFG construction (predecessor/successor edges).
-- IR printer and verifier.
+- AST + SemanticModel → Canonical Slot IR lowering.
+- `slot.load` / `slot.store` for local variables and parameters.
+- `global.load` / `global.store` for global variables.
+- `const` values directly materialized (no load).
+- `&&` / `||` short-circuit via CFG (condition context) and Temporary Slot (value context).
+- Runtime global initialization via `.Ltoyc.global_init` + guard.
+- CFG construction (predecessor/successor edges via `rebuildCFG`).
+- IR Verifier (structural well-formedness checks).
+- IR Printer with stable deterministic output.
+- `--dump-ir` debug mode.
+- 413 total tests passing (194 frontend + 120 sema + 62 IR + 37 lowering).
 
 ## P5: O0 RV32 Backend
 

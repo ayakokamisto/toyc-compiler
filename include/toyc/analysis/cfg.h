@@ -1,13 +1,17 @@
 #pragma once
 /// Control Flow Graph utilities.
-/// This is a P0 placeholder — CFG construction will be implemented in P4.
+/// Rebuilds predecessor/successor edges from terminators.
 
 namespace toyc {
 
 class Function;
+class Module;
 
-/// Build/update the CFG edges (predecessors/successors) for a function.
-/// P0 stub: does nothing.
-void buildCFG(Function& func);
+/// Rebuild CFG edges (predecessors/successors) for a single function.
+/// Clears existing edges and reconstructs from terminators.
+void rebuildCFG(Function& func);
+
+/// Rebuild CFG for all functions in a module.
+void rebuildCFG(Module& module);
 
 } // namespace toyc

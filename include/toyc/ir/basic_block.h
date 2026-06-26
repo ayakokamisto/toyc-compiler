@@ -1,33 +1,47 @@
 #pragma once
 /// BasicBlock — a straight-line sequence of instructions ending with a terminator.
+///
+/// Each block has a unique BlockId and label, a list of ordinary instructions,
+/// exactly one terminator, and predecessor/successor edges maintained by rebuildCFG().
 
 #include "toyc/ir/instruction.h"
 #include "toyc/support/ids.h"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace toyc {
 
+class Function;
+
 /// A basic block: a sequence of instructions with a single entry and exit.
 class BasicBlock {
 public:
-  explicit BasicBlock(BlockId id) : id_(id) {}
+  explicit BasicBlock(BlockId id, std::string label = "");
 
   [[nodiscard]] BlockId id() const { return id_; }
+  [[nodiscard]] const std::string& label() const { return label_; }
 
-  /// Instructions in this block (in order).
-  [[nodiscard]] const std::vector<Instruction*>& instructions() const { return insts_; }
-  void appendInst(Instruction* inst);
+  /// Ordinary instructions (not including the terminator).
+  [[nodiscard]] const std::vector<std::unique_ptr<Inst>>& instructions() const {
+    return insts_;
+  }
 
-  /// CFG edges (set during CFG construction).
+  /// Append an ordinary instruction. Returns a raw pointer to the appended inst.
+  /// Must not be called after a terminator has been set.
+  Inst* appendInst(std::unique_ptr<Inst> inst);
+
+  /// The terminator (Br, CondBr, or Ret). Null if not yet set.
+  [[nodiscard]] const Terminator* terminator() const { return term_ ? &*term_ : nullptr; }
+  [[nodiscard]] bool hasTerminator() const { return term_.has_value(); }
+
+  /// Set the terminator. Must not be called twice.
+  void setTerminator(Terminator term);
+
+  /// CFG edges — set by rebuildCFG(), not by lowering.
   [[nodiscard]] const std::vector<BlockId>& successors() const { return succs_; }
   [[nodiscard]] const std::vector<BlockId>& predecessors() const { return preds_; }
-  void addSuccessor(BlockId b);
-  void addPredecessor(BlockId b);
-
-  /// The terminator instruction (br, condbr, ret) — last instruction.
-  [[nodiscard]] Instruction* terminator() const;
 
   /// Parent function.
   [[nodiscard]] FunctionId parentFunction() const { return parentFunc_; }
@@ -35,10 +49,18 @@ public:
 
 private:
   BlockId id_;
+  std::string label_;
   FunctionId parentFunc_;
-  std::vector<Instruction*> insts_;
+  std::vector<std::unique_ptr<Inst>> insts_;
+  std::optional<Terminator> term_;
   std::vector<BlockId> succs_;
   std::vector<BlockId> preds_;
+
+  // Only rebuildCFG() should modify edges.
+  friend void rebuildCFG(Function& func);
+  void clearEdges();
+  void addSuccessor(BlockId b);
+  void addPredecessor(BlockId b);
 };
 
 } // namespace toyc

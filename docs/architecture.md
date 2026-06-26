@@ -7,13 +7,14 @@ toyc_support
   ↑
   ├── toyc_frontend  (Lexer / Parser / AST)
   ├── toyc_sema      (Semantic analysis)
-  ├── toyc_ir        (SSA IR)
+  ├── toyc_ir        (Canonical Slot IR — Builder / Printer / Verifier)
   │     ↑
-  │     ├── toyc_analysis   (CFG / DomTree / LoopInfo)
-  │     └── toyc_passes     (Optimization passes)
-  ├── toyc_mir       (Machine IR)
+  │     ├── toyc_analysis   (CFG construction)
+  │     ├── toyc_lowering   (AST + Sema → IR)
+  │     └── toyc_passes     (Optimization passes, future)
+  ├── toyc_mir       (Machine IR, future)
   │     ↑
-  │     └── toyc_riscv32    (RISC-V32 backend)
+  │     └── toyc_riscv32    (RISC-V32 backend, future)
   └── toycc          (Driver / main)
 ```
 
@@ -64,7 +65,7 @@ Source (stdin)
 
 | ID | Domain | Purpose |
 |----|--------|---------|
-| `ValueId` | SSA IR | Unique identifier for every SSA value (instruction results, arguments, constants). |
+| `ValueId` | IR | Unique identifier for every computed value (instruction results, function arguments). |
 | `SlotId` | Slot IR | Identifier for mutable local variable slots (pre-Mem2Reg). |
 | `SymbolId` | Sema | Symbol table entry — tracks declarations, types, scopes. |
 | `BlockId` | IR | Basic block identifier — used in CFG edges and branch targets. |
@@ -97,7 +98,7 @@ This decision is validated by parser tests including
 2. **P1**: Token + Lexer + token dump
 3. **P2**: Parser + AST
 4. **P3**: Sema + constant evaluation
-5. **P4**: Slot IR + CFG construction
+5. **P4**: Slot IR + CFG construction ✅
 6. **P5**: O0 RV32 backend (no optimization)
 7. **P6**: Mem2Reg + SSA verifier
 8. **P7**: Basic optimization passes (DCE, constant folding in IR)

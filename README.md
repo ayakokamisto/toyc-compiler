@@ -8,8 +8,15 @@ ToyC 语言编译器 — 武汉大学编译原理课程实践项目。
 
 ## 当前状态
 
-**P3 — 语义分析器**：Lexer + Parser + AST + 语义分析已实现，支持 `--dump-tokens`、`--dump-ast`、`--dump-sema` 调试模式。
-当前尚未实现 IR 生成或汇编生成功能。
+**P4 — Canonical Slot IR + CFG**：AST + SemanticModel → IR 降低已实现，支持 `--dump-ir` 调试模式。
+当前尚未实现 RISC-V32 汇编生成功能。
+
+IR 特点：
+- 局部变量和参数使用 Slot（`load.slot` / `store.slot`）
+- 表达式临时值使用唯一 ValueId
+- 全局变量使用 `load.global` / `store.global`
+- `&&` / `||` 使用 CFG 短路
+- 运行期全局初始化使用内部 `.Ltoyc.global_init` 函数 + guard
 
 ## 接口
 
@@ -32,7 +39,9 @@ cmake --build build -j
 cmake -S . -B build -DTOYC_BUILD_TESTS=ON
 cmake --build build -j
 ./build/toyc-frontend-tests
+./build/toyc-sema-tests
 ./build/toyc-ir-tests
+./build/toyc-lowering-tests
 ```
 
 ## 使用
@@ -50,7 +59,10 @@ cmake --build build -j
 # 语义分析调试（SemanticModel dump 到 stderr）
 ./build/toycc --dump-sema < input.tc
 
-# 编译（当前未实现）
+# IR 调试（IR dump 到 stderr）
+./build/toycc --dump-ir < input.tc
+
+# 编译（当前未实现 RV32 后端）
 ./build/toycc < input.tc > output.s
 ```
 
@@ -60,11 +72,12 @@ cmake --build build -j
 toyc_support    — 公共类型、诊断
 toyc_frontend   — Lexer / Parser / AST
 toyc_sema       — 语义分析
-toyc_ir         — SSA IR
-toyc_analysis   — CFG / Dominator / Loop 分析
-toyc_passes     — 优化 Pass
-toyc_mir        — Machine IR
-toyc_riscv32    — RISC-V32 后端
+toyc_ir         — Canonical Slot IR（Builder / Printer / Verifier）
+toyc_analysis   — CFG 构建
+toyc_lowering   — AST → IR 降低
+toyc_passes     — 优化 Pass（未来）
+toyc_mir        — Machine IR（未来）
+toyc_riscv32    — RISC-V32 后端（未来）
 toycc           — 编译器可执行入口
 ```
 

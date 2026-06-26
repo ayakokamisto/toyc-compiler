@@ -56,15 +56,32 @@ target_link_libraries(toyc_sema PUBLIC toyc_frontend)
 
 # ir → support
 toyc_add_library(toyc_ir
-  src/ir/scaffold.cpp
+  src/ir/ir_type.cpp
+  src/ir/basic_block.cpp
+  src/ir/function.cpp
+  src/ir/module.cpp
+  src/ir/builder.cpp
+  src/ir/printer.cpp
+  src/ir/verifier.cpp
 )
 target_link_libraries(toyc_ir PUBLIC toyc_support)
 
 # analysis → ir
 toyc_add_library(toyc_analysis
-  src/analysis/scaffold.cpp
+  src/analysis/cfg.cpp
 )
 target_link_libraries(toyc_analysis PUBLIC toyc_ir)
+
+# lowering → frontend, sema, ir, analysis
+toyc_add_library(toyc_lowering
+  src/lowering/ast_to_ir.cpp
+)
+target_link_libraries(toyc_lowering PUBLIC
+  toyc_frontend
+  toyc_sema
+  toyc_ir
+  toyc_analysis
+)
 
 # passes → analysis
 toyc_add_library(toyc_passes
@@ -94,6 +111,7 @@ target_link_libraries(toycc PRIVATE
   toyc_sema
   toyc_ir
   toyc_analysis
+  toyc_lowering
   toyc_passes
   toyc_mir
   toyc_riscv32
@@ -123,10 +141,15 @@ if(TOYC_BUILD_TESTS)
 
   add_executable(toyc-ir-tests
     tests/ir/ir_smoke_test.cpp
+    tests/ir/ir_builder_test.cpp
+    tests/ir/cfg_test.cpp
+    tests/ir/ir_verifier_test.cpp
+    tests/ir/ir_printer_test.cpp
   )
   target_link_libraries(toyc-ir-tests PRIVATE
     GTest::gtest_main
     toyc_ir
+    toyc_analysis
   )
   toyc_set_warnings(toyc-ir-tests)
 
@@ -144,4 +167,18 @@ if(TOYC_BUILD_TESTS)
     toyc_sema
   )
   toyc_set_warnings(toyc-sema-tests)
+
+  add_executable(toyc-lowering-tests
+    tests/lowering/lowering_basic_test.cpp
+    tests/lowering/lowering_control_flow_test.cpp
+    tests/lowering/lowering_short_circuit_test.cpp
+    tests/lowering/lowering_global_test.cpp
+    tests/lowering/lowering_error_test.cpp
+    tests/lowering/driver_dump_ir_test.cpp
+  )
+  target_link_libraries(toyc-lowering-tests PRIVATE
+    GTest::gtest_main
+    toyc_lowering
+  )
+  toyc_set_warnings(toyc-lowering-tests)
 endif()

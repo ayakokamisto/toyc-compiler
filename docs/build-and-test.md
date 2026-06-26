@@ -30,7 +30,13 @@ cmake --build build -j
 # AST dump (P2 — parser debug mode, output to stderr)
 ./build/toycc --dump-ast < input.tc
 
-# Compile ToyC to RISC-V32 assembly (not yet implemented)
+# Semantic model dump (P3 — sema debug mode, output to stderr)
+./build/toycc --dump-sema < input.tc
+
+# IR dump (P4 — IR debug mode, output to stderr)
+./build/toycc --dump-ir < input.tc
+
+# Compile ToyC to RISC-V32 assembly (RV32 backend not yet implemented)
 ./build/toycc < input.tc > output.s
 
 # With optimization flag
@@ -46,11 +52,17 @@ cmake --build build -j
 # Frontend tests
 ./build/toyc-frontend-tests
 
+# Sema tests
+./build/toyc-sema-tests
+
 # IR tests
 ./build/toyc-ir-tests
 
+# Lowering tests
+./build/toyc-lowering-tests
+
 # All tests
-./build/toyc-frontend-tests && ./build/toyc-ir-tests
+./build/toyc-frontend-tests && ./build/toyc-sema-tests && ./build/toyc-ir-tests && ./build/toyc-lowering-tests
 ```
 
 ## Justfile Recipes
