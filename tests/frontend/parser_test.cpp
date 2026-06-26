@@ -434,6 +434,33 @@ TEST(ParserTest, RelationEqualPrecedence_a_lt_b_eq_c) {
   EXPECT_EQ(lt.op(), BinaryOperator::Less);
 }
 
+TEST(ParserTest, RelationEqualPrecedence_2_eq_3_lt_4) {
+  // 2 == 3 < 4  →  Equal(IntegerLiteral(2), Less(IntegerLiteral(3), IntegerLiteral(4)))
+  // This verifies that < binds tighter than == per C semantics.
+  auto ast = expectParse("int main() { return 2 == 3 < 4; }");
+  auto& func = static_cast<const FuncDef&>(*ast->items()[0]);
+  auto& block = static_cast<const BlockStmt&>(*func.body());
+  auto& ret = static_cast<const ReturnStmt&>(*block.statements()[0]);
+
+  auto& eq = static_cast<const BinaryExpr&>(*ret.value());
+  EXPECT_EQ(eq.op(), BinaryOperator::Equal);
+  EXPECT_EQ(eq.lhs()->kind(), ASTKind::IntegerLiteralExpr);
+  EXPECT_EQ(eq.rhs()->kind(), ASTKind::BinaryExpr);
+
+  auto& lhsLit = static_cast<const IntegerLiteralExpr&>(*eq.lhs());
+  EXPECT_EQ(lhsLit.rawValue(), "2");
+
+  auto& lt = static_cast<const BinaryExpr&>(*eq.rhs());
+  EXPECT_EQ(lt.op(), BinaryOperator::Less);
+  EXPECT_EQ(lt.lhs()->kind(), ASTKind::IntegerLiteralExpr);
+  EXPECT_EQ(lt.rhs()->kind(), ASTKind::IntegerLiteralExpr);
+
+  auto& ltLhs = static_cast<const IntegerLiteralExpr&>(*lt.lhs());
+  auto& ltRhs = static_cast<const IntegerLiteralExpr&>(*lt.rhs());
+  EXPECT_EQ(ltLhs.rawValue(), "3");
+  EXPECT_EQ(ltRhs.rawValue(), "4");
+}
+
 TEST(ParserTest, ComprehensivePrecedence) {
   // a || b && c == d + e * f
   // → LogicalOr(a, LogicalAnd(b, Equal(c, Add(d, Multiply(e, f)))))
