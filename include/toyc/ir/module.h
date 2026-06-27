@@ -43,6 +43,14 @@ class Module {
 public:
   Module() = default;
 
+  // Move operations: must rebind Function::parentModule_ after moving.
+  Module(Module&& other) noexcept;
+  Module& operator=(Module&& other) noexcept;
+
+  // Copy is deleted — IDs would conflict.
+  Module(const Module&) = delete;
+  Module& operator=(const Module&) = delete;
+
   /// Create a new function in this module.
   Function* createFunction(std::string name, IRType returnType);
 
@@ -62,11 +70,19 @@ public:
   /// Find a function by name.
   [[nodiscard]] Function* findFunctionByName(const std::string& name);
 
+  /// Allocate module-unique IDs. Used by Function during creation.
+  ValueId allocValueId() { return ValueId(nextValueId_++); }
+  SlotId allocSlotId() { return SlotId(nextSlotId_++); }
+  BlockId allocBlockId() { return BlockId(nextBlockId_++); }
+
 private:
   std::vector<std::unique_ptr<Function>> funcs_;
   std::vector<IRGlobal> globals_;
   uint32_t nextFuncId_ = 0;
   uint32_t nextGlobalId_ = 0;
+  uint32_t nextValueId_ = 0;
+  uint32_t nextSlotId_ = 0;
+  uint32_t nextBlockId_ = 0;
 };
 
 } // namespace toyc

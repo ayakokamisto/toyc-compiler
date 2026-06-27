@@ -69,3 +69,47 @@ main:
 4. Liveness → Register allocation (linear scan)
 5. Register allocation → Frame layout
 6. Frame layout → Assembly emission
+
+## P5 ABI Contract (O0 RV32 Backend)
+
+P5 implements a conservative, stack-based RV32 backend with no optimization.
+
+### Function ABI
+
+1. All ToyC functions follow RV32 integer function ABI conventions.
+2. The first 8 `int` parameters are passed in `a0`–`a7`.
+3. Additional parameters (if any) are passed via the caller's stack area.
+4. `int` return values are placed in `a0`.
+5. `void` functions do not set a return value.
+6. Both ordinary functions and `main` return to the caller via `ret`.
+7. `main` does not directly execute `ecall`; the C runtime wrapper handles exit.
+8. Call sites observe caller-saved (`t0`–`t6`, `a0`–`a7`, `ra`) and callee-saved (`s0`–`s11`) conventions.
+9. Every call site maintains 16-byte stack alignment.
+10. P5 uses conservative stack-slot allocation for all values;
+    P8 replaces this with real register allocation.
+
+### ISA Decision Table
+
+| Extension | Status | Notes |
+|-----------|--------|-------|
+| RV32I | Required | Base integer ISA, always available. |
+| M extension (mul/div/rem) | Conditional | Use only if local toolchain and OJ environment confirm support. |
+| M extension fallback | P5+ | If unavailable, use internal helper calls or equivalent sequences. |
+
+### P5 Code Generation Strategy
+
+- Every IR value is spilled to a stack slot (no register allocation).
+- Each `SlotId` maps to a fixed stack offset.
+- Each `ValueId` (instruction result) maps to a temporary stack slot.
+- `ConstInt` → `li` + store to stack.
+- `Binary(Add, a, b)` → load a, load b, `add`, store result.
+- `Call` → load arguments into `a0`–`a7` (or stack), `jal`, store `a0` result.
+- `CondBr` → load condition, `bnez`/`beqz` to targets.
+- `Return` → load value into `a0`, restore `ra`, `ret`.
+
+### Assembly Output Contract
+
+- Output to stdout, one instruction per line.
+- `.text` section, `.globl main` directive.
+- Function labels match IR function names.
+- No data section in P5 (globals handled in future phases).

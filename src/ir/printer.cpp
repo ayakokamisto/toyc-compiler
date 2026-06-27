@@ -96,12 +96,6 @@ static void dumpInst(std::ostream& out, const Module& module, const Inst& inst,
       out << ")";
       break;
     }
-    case Opcode::Phi:
-      out << "phi";
-      for (const auto& inc : inst.phiIncoming) {
-        out << " [" << valueStr(inc.value) << ", " << blockLabel(*module.findFunction(FunctionId{0}), inc.block) << "]";
-      }
-      break;
     default:
       out << "<unknown>";
       break;
@@ -136,14 +130,14 @@ static void dumpTerminator(std::ostream& out, const Module& module, const Termin
 }
 
 static void dumpSlot(std::ostream& out, const Slot& slot) {
-  out << "      $" << slot.id.value << " kind=";
+  out << "      $slot" << slot.id.value << " kind=";
   switch (slot.kind) {
     case SlotKind::Parameter:     out << "parameter"; break;
     case SlotKind::LocalVariable: out << "local"; break;
     case SlotKind::Temporary:     out << "temporary"; break;
   }
-  if (slot.sourceSymbol.has_value()) {
-    out << " symbol=" << slot.sourceSymbol->value;
+  if (!slot.debugName.empty()) {
+    out << " name=" << slot.debugName;
   }
   out << "\n";
 }

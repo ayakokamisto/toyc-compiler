@@ -700,7 +700,7 @@ std::optional<int32_t> SemanticAnalyzer::evalConstWithSymbols(const Expr& expr) 
     return std::nullopt;
   };
 
-  auto result = evaluateConstExpr(expr, diag_, lookup);
+  auto result = evaluateConstExpr(expr, diag_, &lookup);
   if (result.state == ConstEvalState::Known) {
     return result.value;
   }
@@ -721,7 +721,7 @@ std::optional<int32_t> SemanticAnalyzer::probeStaticInitValue(const Expr& expr) 
     return std::nullopt;
   };
 
-  auto result = evaluateConstExpr(expr, probeDiag, lookup);
+  auto result = evaluateConstExpr(expr, probeDiag, &lookup);
   if (result.state == ConstEvalState::Known) {
     return result.value;
   }

@@ -19,7 +19,8 @@ struct ParsedExpr {
 
 static ParsedExpr parseExpr(const std::string& source) {
   ParsedExpr pe;
-  Lexer lexer("int main() { return " + source + "; }", pe.diag);
+  std::string fullSource = "int main() { return " + source + "; }";
+  Lexer lexer(fullSource, pe.diag);
   auto tokens = lexer.tokenize();
   Parser parser(tokens, pe.diag);
   pe.ast = parser.parse();
@@ -255,6 +256,49 @@ TEST(ParseUnsignedTest, Overflow) {
 TEST(ParseUnsignedTest, Empty) {
   auto v = parseUnsignedMagnitude("");
   EXPECT_FALSE(v.has_value());
+}
+
+// ── In-process stability tests ────────────────────────────────────────────
+
+TEST(ConstEvalStabilityTest, ShortCircuitAndRepeatedInSingleProcess) {
+  for (int i = 0; i < 10000; ++i) {
+    DiagnosticEngine diag;
+    Lexer lexer("int main() { return 0 && (1 / 0); }", diag);
+    auto tokens = lexer.tokenize();
+    Parser parser(tokens, diag);
+    auto ast = parser.parse();
+    auto& func = static_cast<const FuncDef&>(*ast->items()[0]);
+    auto& block = static_cast<const BlockStmt&>(*func.body());
+    auto& ret = static_cast<const ReturnStmt&>(*block.statements()[0]);
+    auto* expr = ret.value();
+
+    DiagnosticEngine evalDiag;
+    auto r = evaluateConstExpr(*expr, evalDiag);
+    ASSERT_EQ(r.state, ConstEvalState::Known) << "Failed at iteration " << i;
+    ASSERT_EQ(r.value, 0) << "Failed at iteration " << i;
+    ASSERT_FALSE(evalDiag.hasErrors()) << "Failed at iteration " << i;
+    // ast, tokens, diag all destroyed here
+  }
+}
+
+TEST(ConstEvalStabilityTest, ShortCircuitOrRepeatedInSingleProcess) {
+  for (int i = 0; i < 10000; ++i) {
+    DiagnosticEngine diag;
+    Lexer lexer("int main() { return 1 || (1 / 0); }", diag);
+    auto tokens = lexer.tokenize();
+    Parser parser(tokens, diag);
+    auto ast = parser.parse();
+    auto& func = static_cast<const FuncDef&>(*ast->items()[0]);
+    auto& block = static_cast<const BlockStmt&>(*func.body());
+    auto& ret = static_cast<const ReturnStmt&>(*block.statements()[0]);
+    auto* expr = ret.value();
+
+    DiagnosticEngine evalDiag;
+    auto r = evaluateConstExpr(*expr, evalDiag);
+    ASSERT_EQ(r.state, ConstEvalState::Known) << "Failed at iteration " << i;
+    ASSERT_EQ(r.value, 1) << "Failed at iteration " << i;
+    ASSERT_FALSE(evalDiag.hasErrors()) << "Failed at iteration " << i;
+  }
 }
 
 } // namespace toyc

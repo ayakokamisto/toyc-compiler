@@ -26,10 +26,12 @@ struct ParamInfo {
   SlotId slotId;
 };
 
+class Module;  // Forward declaration — module.h includes function.h.
+
 /// A function in the IR module.
 class Function {
 public:
-  Function(FunctionId id, std::string name, IRType returnType);
+  Function(FunctionId id, std::string name, IRType returnType, Module* parent);
 
   [[nodiscard]] FunctionId id() const { return id_; }
   [[nodiscard]] const std::string& name() const { return name_; }
@@ -49,29 +51,31 @@ public:
 
   /// Add a parameter. Creates the ArgumentValue and parameter Slot.
   /// Returns the ParamInfo with assigned ValueId and SlotId.
-  ParamInfo addParam(SymbolId sym);
+  ParamInfo addParam(SymbolId sym, std::string debugName = "");
 
   /// Slots.
   [[nodiscard]] const std::vector<Slot>& slots() const { return slots_; }
-  SlotId createSlot(SlotKind kind, std::optional<SymbolId> sym = std::nullopt);
+  SlotId createSlot(SlotKind kind, std::optional<SymbolId> sym = std::nullopt,
+                    std::string debugName = "");
 
   /// Values.
   [[nodiscard]] const std::vector<Value>& values() const { return values_; }
   ValueId createArgumentValue();
   ValueId createInstValue();
 
+  /// Rebind the parent module pointer (used after Module move).
+  void rebindParentModule(Module* newParent) { parentModule_ = newParent; }
+
 private:
   FunctionId id_;
   std::string name_;
   IRType returnType_;
   bool isInternal_ = false;
+  Module* parentModule_;
   std::vector<std::unique_ptr<BasicBlock>> blocks_;
   std::vector<ParamInfo> params_;
   std::vector<Slot> slots_;
   std::vector<Value> values_;
-  uint32_t nextBlockId_ = 0;
-  uint32_t nextSlotId_ = 0;
-  uint32_t nextValueId_ = 0;
 };
 
 } // namespace toyc

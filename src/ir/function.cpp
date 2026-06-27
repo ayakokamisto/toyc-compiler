@@ -1,16 +1,17 @@
 /// Function implementation for ToyC Canonical Slot IR.
 
 #include "toyc/ir/function.h"
+#include "toyc/ir/module.h"
 
 #include <stdexcept>
 
 namespace toyc {
 
-Function::Function(FunctionId id, std::string name, IRType returnType)
-    : id_(id), name_(std::move(name)), returnType_(returnType) {}
+Function::Function(FunctionId id, std::string name, IRType returnType, Module* parent)
+    : id_(id), name_(std::move(name)), returnType_(returnType), parentModule_(parent) {}
 
 BasicBlock* Function::createBlock(std::string label) {
-  BlockId bid(nextBlockId_++);
+  BlockId bid = parentModule_->allocBlockId();
   auto bb = std::make_unique<BasicBlock>(bid, label.empty() ? "block" + std::to_string(bid.value) : label);
   bb->setParentFunction(id_);
   auto* raw = bb.get();
@@ -22,27 +23,28 @@ BasicBlock* Function::entryBlock() const {
   return blocks_.empty() ? nullptr : blocks_.front().get();
 }
 
-ParamInfo Function::addParam(SymbolId sym) {
+ParamInfo Function::addParam(SymbolId sym, std::string debugName) {
   ValueId vid = createArgumentValue();
-  SlotId sid = createSlot(SlotKind::Parameter, sym);
+  SlotId sid = createSlot(SlotKind::Parameter, sym, std::move(debugName));
   ParamInfo info{sym, vid, sid};
   params_.push_back(info);
   return info;
 }
 
-SlotId Function::createSlot(SlotKind kind, std::optional<SymbolId> sym) {
-  SlotId sid(nextSlotId_++);
+SlotId Function::createSlot(SlotKind kind, std::optional<SymbolId> sym, std::string debugName) {
+  SlotId sid = parentModule_->allocSlotId();
   Slot slot;
   slot.id = sid;
   slot.type = I32Type;
   slot.kind = kind;
   slot.sourceSymbol = sym;
+  slot.debugName = std::move(debugName);
   slots_.push_back(slot);
   return sid;
 }
 
 ValueId Function::createArgumentValue() {
-  ValueId vid(nextValueId_++);
+  ValueId vid = parentModule_->allocValueId();
   Value val;
   val.id = vid;
   val.type = I32Type;
@@ -53,7 +55,7 @@ ValueId Function::createArgumentValue() {
 }
 
 ValueId Function::createInstValue() {
-  ValueId vid(nextValueId_++);
+  ValueId vid = parentModule_->allocValueId();
   Value val;
   val.id = vid;
   val.type = I32Type;

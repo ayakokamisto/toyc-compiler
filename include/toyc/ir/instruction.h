@@ -48,13 +48,6 @@ struct Inst {
   // Call
   FunctionId callee;
   std::vector<ValueId> arguments;
-
-  // Phi (future P6)
-  struct PhiIncoming {
-    ValueId value;
-    BlockId block;
-  };
-  std::vector<PhiIncoming> phiIncoming;
 };
 
 // ── Terminators ────────────────────────────────────────────────────────────

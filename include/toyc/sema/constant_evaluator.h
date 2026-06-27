@@ -31,10 +31,10 @@ using ConstLookup = std::function<std::optional<int32_t>(std::string_view)>;
 /// Evaluate a constant expression with optional identifier resolution.
 /// @param expr       The expression to evaluate.
 /// @param diag       Diagnostic engine for error reporting.
-/// @param lookup     Callback to resolve constant identifiers.
+/// @param lookup     Optional callback to resolve constant identifiers. May be null.
 /// @param negate     True if this is the operand of unary minus (for INT32_MIN).
 ConstEvalResult evaluateConstExpr(const Expr& expr, DiagnosticEngine& diag,
-                                  ConstLookup lookup = nullptr,
+                                  const ConstLookup* lookup = nullptr,
                                   bool negate = false);
 
 /// Parse an unsigned integer literal from raw text.

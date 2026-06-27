@@ -46,7 +46,7 @@ static ConstEvalResult evalError() {
 // ── Forward declaration ──────────────────────────────────────────────────
 
 static ConstEvalResult evalImpl(const Expr& expr, DiagnosticEngine& diag,
-                                ConstLookup& lookup, bool negate);
+                                const ConstLookup* lookup, bool negate);
 
 // ── Integer literal ──────────────────────────────────────────────────────
 
@@ -83,9 +83,9 @@ static ConstEvalResult evalIntegerLiteral(const IntegerLiteralExpr& lit,
 
 static ConstEvalResult evalIdentifier(const IdentifierExpr& id,
                                       DiagnosticEngine& diag,
-                                      ConstLookup& lookup) {
-  if (lookup) {
-    auto val = lookup(id.name());
+                                      const ConstLookup* lookup) {
+  if (lookup && *lookup) {
+    auto val = (*lookup)(id.name());
     if (val.has_value()) return known(val.value());
     // lookup returned nullopt — identifier is not a known constant.
     // This is an error in a constant context (e.g., const initializer).
@@ -99,7 +99,7 @@ static ConstEvalResult evalIdentifier(const IdentifierExpr& id,
 // ── Unary expression ─────────────────────────────────────────────────────
 
 static ConstEvalResult evalUnary(const UnaryExpr& expr, DiagnosticEngine& diag,
-                                 ConstLookup& lookup, bool negate) {
+                                 const ConstLookup* lookup, bool negate) {
   if (expr.op() == UnaryOperator::Minus) {
     // Pass negate=true to detect INT32_MIN.
     auto inner = evalImpl(*expr.operand(), diag, lookup, true);
@@ -133,7 +133,7 @@ static ConstEvalResult evalUnary(const UnaryExpr& expr, DiagnosticEngine& diag,
 // ── Binary expression ────────────────────────────────────────────────────
 
 static ConstEvalResult evalBinary(const BinaryExpr& expr, DiagnosticEngine& diag,
-                                  ConstLookup& lookup) {
+                                  const ConstLookup* lookup) {
   // Short-circuit &&
   if (expr.op() == BinaryOperator::LogicalAnd) {
     auto lhs = evalImpl(*expr.lhs(), diag, lookup, false);
@@ -241,7 +241,7 @@ static ConstEvalResult evalBinary(const BinaryExpr& expr, DiagnosticEngine& diag
 // ── Main dispatch ────────────────────────────────────────────────────────
 
 static ConstEvalResult evalImpl(const Expr& expr, DiagnosticEngine& diag,
-                                ConstLookup& lookup, bool negate) {
+                                const ConstLookup* lookup, bool negate) {
   switch (expr.kind()) {
     case ASTKind::IntegerLiteralExpr:
       return evalIntegerLiteral(
@@ -271,7 +271,7 @@ static ConstEvalResult evalImpl(const Expr& expr, DiagnosticEngine& diag,
 // ── Public API ───────────────────────────────────────────────────────────
 
 ConstEvalResult evaluateConstExpr(const Expr& expr, DiagnosticEngine& diag,
-                                  ConstLookup lookup, bool negate) {
+                                  const ConstLookup* lookup, bool negate) {
   return evalImpl(expr, diag, lookup, negate);
 }
 

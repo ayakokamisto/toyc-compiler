@@ -137,4 +137,55 @@ TEST(PrinterTest, ControlFlowDump) {
   EXPECT_NE(ir.find("if.merge:"), std::string::npos);
 }
 
+TEST(PrinterTest, SlotDebugName) {
+  Module mod;
+  auto* func = mod.createFunction("f", I32Type);
+  func->addParam(SymbolId(0), "a");
+  func->createSlot(SlotKind::LocalVariable, SymbolId(1), "x");
+  func->createSlot(SlotKind::Temporary, std::nullopt, "tmp.logic.0");
+
+  IRBuilder builder;
+  builder.setFunction(func);
+  auto entry = builder.createBlock("entry");
+  builder.setInsertBlock(entry);
+  auto val = builder.emitConstInt(0);
+  builder.emitReturn(val);
+
+  rebuildCFG(mod);
+
+  std::ostringstream out;
+  dumpIR(mod, out);
+  std::string ir = out.str();
+
+  EXPECT_NE(ir.find("name=a"), std::string::npos);
+  EXPECT_NE(ir.find("name=x"), std::string::npos);
+  EXPECT_NE(ir.find("name=tmp.logic.0"), std::string::npos);
+  // Should NOT contain raw symbol IDs as the only debug info.
+  EXPECT_EQ(ir.find("symbol=0"), std::string::npos);
+  EXPECT_EQ(ir.find("symbol=1"), std::string::npos);
+}
+
+TEST(PrinterTest, DeterministicSlotDump) {
+  // Same module should produce identical slot dump.
+  auto buildModule = []() {
+    Module mod;
+    auto* func = mod.createFunction("f", I32Type);
+    func->addParam(SymbolId(0), "a");
+    func->createSlot(SlotKind::LocalVariable, SymbolId(1), "x");
+    IRBuilder builder;
+    builder.setFunction(func);
+    auto entry = builder.createBlock("entry");
+    builder.setInsertBlock(entry);
+    auto val = builder.emitConstInt(0);
+    builder.emitReturn(val);
+    rebuildCFG(mod);
+    return mod;
+  };
+
+  std::ostringstream out1, out2;
+  dumpIR(buildModule(), out1);
+  dumpIR(buildModule(), out2);
+  EXPECT_EQ(out1.str(), out2.str());
+}
+
 } // namespace toyc

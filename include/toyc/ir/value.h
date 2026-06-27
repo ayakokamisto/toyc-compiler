@@ -49,6 +49,7 @@ struct Slot {
   IRType type = I32Type;
   SlotKind kind = SlotKind::LocalVariable;
   std::optional<SymbolId> sourceSymbol;  ///< None for Temporary slots.
+  std::string debugName;                 ///< Human-readable name for IR dump.
 };
 
 } // namespace toyc

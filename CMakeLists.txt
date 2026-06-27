@@ -107,14 +107,7 @@ add_executable(toycc
   src/driver/compiler_pipeline.cpp
 )
 target_link_libraries(toycc PRIVATE
-  toyc_frontend
-  toyc_sema
-  toyc_ir
-  toyc_analysis
   toyc_lowering
-  toyc_passes
-  toyc_mir
-  toyc_riscv32
 )
 toyc_set_warnings(toycc)
 

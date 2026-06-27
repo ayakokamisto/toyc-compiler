@@ -4,9 +4,40 @@
 
 namespace toyc {
 
+Module::Module(Module&& other) noexcept
+    : funcs_(std::move(other.funcs_)),
+      globals_(std::move(other.globals_)),
+      nextFuncId_(other.nextFuncId_),
+      nextGlobalId_(other.nextGlobalId_),
+      nextValueId_(other.nextValueId_),
+      nextSlotId_(other.nextSlotId_),
+      nextBlockId_(other.nextBlockId_) {
+  // Rebind all Function pointers to this (the new Module address).
+  for (auto& f : funcs_) {
+    f->rebindParentModule(this);
+  }
+}
+
+Module& Module::operator=(Module&& other) noexcept {
+  if (this != &other) {
+    funcs_ = std::move(other.funcs_);
+    globals_ = std::move(other.globals_);
+    nextFuncId_ = other.nextFuncId_;
+    nextGlobalId_ = other.nextGlobalId_;
+    nextValueId_ = other.nextValueId_;
+    nextSlotId_ = other.nextSlotId_;
+    nextBlockId_ = other.nextBlockId_;
+    // Rebind all Function pointers to this.
+    for (auto& f : funcs_) {
+      f->rebindParentModule(this);
+    }
+  }
+  return *this;
+}
+
 Function* Module::createFunction(std::string name, IRType returnType) {
   FunctionId fid(nextFuncId_++);
-  auto func = std::make_unique<Function>(fid, std::move(name), returnType);
+  auto func = std::make_unique<Function>(fid, std::move(name), returnType, this);
   auto* ptr = func.get();
   funcs_.push_back(std::move(func));
   return ptr;

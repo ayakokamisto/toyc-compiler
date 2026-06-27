@@ -149,15 +149,8 @@ static void verifyInst(VerificationResult& result, const Function& func, const M
       }
       break;
     }
-    case Opcode::Phi:
-      for (const auto& inc : inst.phiIncoming) {
-        checkValue(inc.value, "phi incoming value");
-        if (!blockExists(func, inc.block)) {
-          result.addError("Invalid BlockId in phi incoming of block " + block.label());
-        }
-      }
-      break;
     default:
+      result.addError("Illegal opcode in instruction of block " + block.label());
       break;
   }
 }

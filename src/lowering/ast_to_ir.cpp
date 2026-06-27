@@ -42,6 +42,9 @@ struct LoweringContext {
   // Block numbering for stable labels.
   int blockCounter = 0;
 
+  // Temporary slot numbering for stable debug names.
+  int tempCounter = 0;
+
   // Current function being lowered.
   Function* currentFunc = nullptr;
 
@@ -89,7 +92,8 @@ static ValueId emitLogicalValue(LoweringContext& ctx, const Expr& expr) {
   auto* func = ctx.currentFunc;
 
   // Create temporary slot for the boolean result.
-  SlotId tempSlot = func->createSlot(SlotKind::Temporary);
+  std::string tmpName = "tmp.logic." + std::to_string(ctx.tempCounter++);
+  SlotId tempSlot = func->createSlot(SlotKind::Temporary, std::nullopt, std::move(tmpName));
 
   BlockId trueBlock = ctx.builder.createBlock(ctx.nextBlockLabel("logic.true"));
   BlockId falseBlock = ctx.builder.createBlock(ctx.nextBlockLabel("logic.false"));
@@ -336,7 +340,7 @@ static void lowerDeclStmt(LoweringContext& ctx, const DeclStmt& declStmt) {
   // Variable declaration.
   if (auto* varDecl = dynamic_cast<const VarDecl*>(decl)) {
     auto sym = ctx.sema.resolvedSymbol(*decl);
-    SlotId slot = ctx.currentFunc->createSlot(SlotKind::LocalVariable, sym);
+    SlotId slot = ctx.currentFunc->createSlot(SlotKind::LocalVariable, sym, varDecl->name());
     if (sym.has_value()) {
       ctx.bindSymbol(*sym, slot);
     }
@@ -694,7 +698,7 @@ std::optional<Module> ASTToIRLowering::lower(const CompUnit& unit) {
     for (size_t i = 0; i < funcDef->params().size(); ++i) {
       const auto& param = funcDef->params()[i];
       auto sym = sema_.resolvedSymbol(param);
-      ParamInfo paramInfo = func->addParam(sym.value_or(SymbolId{0}));
+      ParamInfo paramInfo = func->addParam(sym.value_or(SymbolId{0}), param.name());
       if (sym.has_value()) {
         ctx.bindSymbol(*sym, paramInfo.slotId);
       }

@@ -56,9 +56,6 @@ enum class Opcode : uint8_t {
 
   // Calls
   Call,         ///< [%v =] call @func(%args...)
-
-  // SSA (future P6)
-  Phi,          ///< %v = phi [%val, %block]...
 };
 
 constexpr std::string_view opcodeName(Opcode op) {
@@ -75,7 +72,6 @@ constexpr std::string_view opcodeName(Opcode op) {
     case Opcode::CondBr:     return "condbr";
     case Opcode::Ret:        return "ret";
     case Opcode::Call:       return "call";
-    case Opcode::Phi:        return "phi";
   }
   return "?";
 }
