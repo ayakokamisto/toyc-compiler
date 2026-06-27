@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cassert>
 #include <sstream>
+#include <unordered_set>
 
 namespace toyc {
 
@@ -305,66 +306,200 @@ int32_t FrameLayout::incomingArgOffset(int paramIndex) const {
 
 // ── MIR verification ────────────────────────────────────────────────────────
 
-MIRVerificationResult verifyMIR(const MIRModule& module) {
-  MIRVerificationResult result;
+static bool isTerminator(MIROpcode opcode) {
+  return opcode == MIROpcode::Return ||
+         opcode == MIROpcode::Branch ||
+         opcode == MIROpcode::BranchIfNonZero;
+}
 
-  for (const auto& func : module.functions) {
-    // Check that all branch targets exist.
-    std::vector<BlockId> blockIds;
-    for (const auto& blk : func.blocks) {
-      blockIds.push_back(blk.id);
-    }
-
-    auto blockExists = [&](BlockId id) {
-      for (const auto& bid : blockIds) {
-        if (bid == id) return true;
+static bool definesVReg(const MIRInstruction& inst, VRegId* id) {
+  switch (inst.opcode) {
+    case MIROpcode::LoadImm:
+    case MIROpcode::Li:
+    case MIROpcode::LoadFrame:
+    case MIROpcode::LoadGlobal:
+    case MIROpcode::Add:
+    case MIROpcode::Sub:
+    case MIROpcode::Xor:
+    case MIROpcode::Or:
+    case MIROpcode::And:
+    case MIROpcode::Sll:
+    case MIROpcode::Srl:
+    case MIROpcode::Sra:
+    case MIROpcode::Slt:
+    case MIROpcode::Sltu:
+    case MIROpcode::Addi:
+    case MIROpcode::Xori:
+    case MIROpcode::Sltiu:
+    case MIROpcode::La:
+      if (!inst.operands.empty() && inst.operands[0].kind == MIROperandKind::VReg) {
+        *id = inst.operands[0].vregId();
+        return true;
       }
       return false;
-    };
-
-    for (const auto& blk : func.blocks) {
-      for (const auto& inst : blk.insts) {
-        if (inst.opcode == MIROpcode::Branch) {
-          if (inst.operands.size() >= 1 && inst.operands[0].kind == MIROperandKind::BlockLabel) {
-            if (!blockExists(inst.operands[0].blockLabel())) {
-              result.addError("Function '" + func.name + "': branch to nonexistent block");
-            }
-          }
-        }
-        if (inst.opcode == MIROpcode::BranchIfNonZero) {
-          if (inst.operands.size() >= 2 && inst.operands[1].kind == MIROperandKind::BlockLabel) {
-            if (!blockExists(inst.operands[1].blockLabel())) {
-              result.addError("Function '" + func.name + "': bnez to nonexistent block");
-            }
-          }
-        }
+    case MIROpcode::Move:
+      if (!inst.operands.empty() && inst.operands[0].kind == MIROperandKind::VReg) {
+        *id = inst.operands[0].vregId();
+        return true;
       }
+      return false;
+    default:
+      return false;
+  }
+}
+
+static void collectUsedVRegs(const MIRInstruction& inst, std::vector<VRegId>& out) {
+  auto addIfVReg = [&](size_t index) {
+    if (index < inst.operands.size() && inst.operands[index].kind == MIROperandKind::VReg) {
+      out.push_back(inst.operands[index].vregId());
+    }
+  };
+
+  switch (inst.opcode) {
+    case MIROpcode::Move:
+      addIfVReg(1);
+      break;
+    case MIROpcode::StoreFrame:
+    case MIROpcode::StoreGlobal:
+      addIfVReg(1);
+      break;
+    case MIROpcode::Add:
+    case MIROpcode::Sub:
+    case MIROpcode::Xor:
+    case MIROpcode::Or:
+    case MIROpcode::And:
+    case MIROpcode::Sll:
+    case MIROpcode::Srl:
+    case MIROpcode::Sra:
+    case MIROpcode::Slt:
+    case MIROpcode::Sltu:
+      addIfVReg(1);
+      addIfVReg(2);
+      break;
+    case MIROpcode::Addi:
+    case MIROpcode::Xori:
+    case MIROpcode::Sltiu:
+      addIfVReg(1);
+      break;
+    case MIROpcode::BranchIfNonZero:
+      addIfVReg(0);
+      break;
+    default:
+      break;
+  }
+}
+
+MIRVerificationResult verifyMIRFunction(const MIRFunction& func) {
+  MIRVerificationResult result;
+  std::unordered_set<uint32_t> blockIds;
+  std::unordered_set<std::string> blockLabels;
+
+  for (const auto& block : func.blocks) {
+    if (!blockIds.insert(block.id.value).second) {
+      result.addError("Function '" + func.name + "': duplicate block id");
+    }
+    if (!blockLabels.insert(block.label).second) {
+      result.addError("Function '" + func.name + "': duplicate block label");
+    }
+  }
+
+  auto blockExists = [&](BlockId id) {
+    return blockIds.find(id.value) != blockIds.end();
+  };
+
+  int savedRaCount = 0;
+  for (const auto& object : func.frameObjects) {
+    if (object.kind == FrameObjectKind::SavedReturnAddress) {
+      ++savedRaCount;
+    }
+  }
+  if (func.hasCall && savedRaCount != 1) {
+    result.addError("Function '" + func.name + "': non-leaf function must have one saved ra object");
+  }
+  if (!func.hasCall && savedRaCount != 0) {
+    result.addError("Function '" + func.name + "': leaf function has saved ra object");
+  }
+
+  std::unordered_set<uint32_t> defined;
+  for (auto vreg : func.parameterVRegs) {
+    defined.insert(vreg.value);
+  }
+
+  auto validFrameSlot = [&](const MIROperand& operand) {
+    return operand.kind == MIROperandKind::FrameSlot &&
+           operand.frameSlotIndex() >= 0 &&
+           operand.frameSlotIndex() < static_cast<int32_t>(func.frameObjects.size());
+  };
+
+  for (const auto& block : func.blocks) {
+    if (block.insts.empty()) {
+      result.addError("Function '" + func.name + "': block has no instructions");
+      continue;
     }
 
-    // Check that every block ends with a terminator.
-    for (size_t i = 0; i < func.blocks.size(); ++i) {
-      const auto& blk = func.blocks[i];
-      if (blk.insts.empty()) {
-        result.addError("Function '" + func.name + "': block has no instructions");
-        continue;
+    const auto& last = block.insts.back();
+    if (!isTerminator(last.opcode)) {
+      result.addError("Function '" + func.name + "': block '" + block.label +
+                      "' does not end with a terminator");
+    }
+
+    for (const auto& inst : block.insts) {
+      if (inst.opcode == MIROpcode::Branch) {
+        if (inst.operands.empty() || inst.operands[0].kind != MIROperandKind::BlockLabel ||
+            !blockExists(inst.operands[0].blockLabel())) {
+          result.addError("Function '" + func.name + "': branch to nonexistent block");
+        }
       }
-      const auto& last = blk.insts.back();
-      bool isTerminator = (last.opcode == MIROpcode::Return ||
-                           last.opcode == MIROpcode::Branch ||
-                           last.opcode == MIROpcode::BranchIfNonZero ||
-                           last.opcode == MIROpcode::Call);
-      // In P5, Call is not a terminator in MIR; only Return/Branch/BranchIfNonZero.
-      isTerminator = (last.opcode == MIROpcode::Return ||
-                      last.opcode == MIROpcode::Branch ||
-                      last.opcode == MIROpcode::BranchIfNonZero);
-      if (!isTerminator && i < func.blocks.size() - 1) {
-        // Non-last block must end with terminator.
-        result.addError("Function '" + func.name + "': non-final block '" +
-                        blk.label + "' does not end with a terminator");
+      if (inst.opcode == MIROpcode::BranchIfNonZero) {
+        if (inst.operands.size() < 2 || inst.operands[1].kind != MIROperandKind::BlockLabel ||
+            !blockExists(inst.operands[1].blockLabel())) {
+          result.addError("Function '" + func.name + "': bnez to nonexistent block");
+        }
+      }
+
+      if ((inst.opcode == MIROpcode::LoadFrame || inst.opcode == MIROpcode::StoreFrame) &&
+          (inst.operands.size() < 2 || !validFrameSlot(inst.operands[inst.opcode == MIROpcode::LoadFrame ? 1 : 0]))) {
+        result.addError("Function '" + func.name + "': invalid frame slot reference");
+      }
+
+      std::vector<VRegId> uses;
+      collectUsedVRegs(inst, uses);
+      for (auto use : uses) {
+        if (defined.find(use.value) == defined.end()) {
+          result.addError("Function '" + func.name + "': use of undefined vreg");
+        }
+      }
+
+      VRegId def;
+      if (definesVReg(inst, &def)) {
+        defined.insert(def.value);
       }
     }
   }
 
+  if (func.hasCall && func.maxOutgoingArgCount > 8) {
+    int outgoingCount = 0;
+    for (const auto& object : func.frameObjects) {
+      if (object.kind == FrameObjectKind::OutgoingArgument) ++outgoingCount;
+    }
+    if (outgoingCount < func.maxOutgoingArgCount - 8) {
+      result.addError("Function '" + func.name + "': outgoing argument area is too small");
+    }
+  }
+
+  return result;
+}
+
+MIRVerificationResult verifyMIR(const MIRModule& module) {
+  MIRVerificationResult result;
+  for (const auto& func : module.functions) {
+    auto funcResult = verifyMIRFunction(func);
+    if (!funcResult.ok) {
+      for (auto& error : funcResult.errors) {
+        result.addError(std::move(error));
+      }
+    }
+  }
   return result;
 }
 

@@ -11,12 +11,14 @@
 #include "toyc/ir/printer.h"
 #include "toyc/ir/verifier.h"
 #include "toyc/lowering/ast_to_ir.h"
-#include "toyc/mir/instruction_selector.h"
 #include "toyc/mir/mir.h"
+#include "toyc/mir/verifier.h"
 #include "toyc/sema/semantic_analyzer.h"
 #include "toyc/sema/semantic_model.h"
 #include "toyc/support/diagnostics.h"
 #include "toyc/target/riscv32/asm_emitter.h"
+#include "toyc/target/riscv32/instruction_selector.h"
+#include "toyc/target/riscv32/spill_all_allocator.h"
 
 #include <iostream>
 #include <sstream>
@@ -287,7 +289,9 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    std::cout << toyc::riscv32::emitAssembly(*mirModule);
+    toyc::riscv32::SpillAllAllocator allocator;
+    auto allocated = allocator.allocate(std::move(*mirModule));
+    std::cout << toyc::riscv32::emitAssembly(allocated);
   }
 
   return 0;

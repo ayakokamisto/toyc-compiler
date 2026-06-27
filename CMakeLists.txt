@@ -92,15 +92,16 @@ target_link_libraries(toyc_passes PUBLIC toyc_analysis)
 # mir → support
 toyc_add_library(toyc_mir
   src/mir/mir.cpp
-  src/mir/instruction_selector.cpp
 )
 target_link_libraries(toyc_mir PUBLIC toyc_support toyc_ir)
 
 # riscv32 → mir
 toyc_add_library(toyc_riscv32
-  src/target/riscv32/scaffold.cpp
+  src/target/riscv32/asm_emitter.cpp
+  src/target/riscv32/instruction_selector.cpp
+  src/target/riscv32/spill_all_allocator.cpp
 )
-target_link_libraries(toyc_riscv32 PUBLIC toyc_mir)
+target_link_libraries(toyc_riscv32 PUBLIC toyc_support toyc_ir toyc_mir)
 
 # ── Main executable ─────────────────────────────────────────────────────────
 add_executable(toycc
@@ -109,7 +110,6 @@ add_executable(toycc
 )
 target_link_libraries(toycc PRIVATE
   toyc_lowering
-  toyc_mir
   toyc_riscv32
 )
 toyc_set_warnings(toycc)
@@ -184,6 +184,7 @@ if(TOYC_BUILD_TESTS)
   target_link_libraries(toyc-mir-tests PRIVATE
     GTest::gtest_main
     toyc_mir
+    toyc_riscv32
   )
   toyc_set_warnings(toyc-mir-tests)
 

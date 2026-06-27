@@ -1,6 +1,6 @@
 /// RV32 Instruction Selector — lowers Canonical Slot IR to RV32 MIR.
 
-#include "toyc/mir/instruction_selector.h"
+#include "toyc/target/riscv32/instruction_selector.h"
 #include "toyc/ir/basic_block.h"
 #include "toyc/ir/function.h"
 #include "toyc/ir/instruction.h"
@@ -328,17 +328,18 @@ void RV32InstructionSelector::lowerFunction(const Function& func) {
     mirFunc.parameterVRegs.push_back(vreg);
   }
 
-  // Add saved ra placeholder (will be used if function has calls).
-  FrameObject savedRa;
-  savedRa.kind = FrameObjectKind::SavedReturnAddress;
-  savedRa.size = 4;
-  mirFunc.addFrameObject(std::move(savedRa));
-
   mirModule_->functions.push_back(std::move(mirFunc));
   currentFunc_ = &mirModule_->functions.back();
 
   for (const auto& bb : func.blocks()) {
     lowerBlock(*bb);
+  }
+
+  if (currentFunc_->hasCall) {
+    FrameObject savedRa;
+    savedRa.kind = FrameObjectKind::SavedReturnAddress;
+    savedRa.size = 4;
+    currentFunc_->addFrameObject(std::move(savedRa));
   }
 
   // Create VReg homes for all VRegs.

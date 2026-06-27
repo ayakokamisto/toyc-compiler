@@ -1,5 +1,6 @@
 #include "toyc/target/riscv32/asm_emitter.h"
 #include "toyc/mir/mir.h"
+#include "toyc/target/riscv32/spill_all_allocator.h"
 
 #include <gtest/gtest.h>
 #include <regex>
@@ -32,8 +33,13 @@ static MIRModule makeReturnModule(int value) {
   return module;
 }
 
+static riscv32::AllocatedMachineModule allocate(MIRModule module) {
+  riscv32::SpillAllAllocator allocator;
+  return allocator.allocate(std::move(module));
+}
+
 TEST(RV32AssemblyEmitterTest, EmitsMainTextAndReturnWithoutEcall) {
-  auto asmText = riscv32::emitAssembly(makeReturnModule(42));
+  auto asmText = riscv32::emitAssembly(allocate(makeReturnModule(42)));
   EXPECT_NE(asmText.find(".section .text"), std::string::npos);
   EXPECT_NE(asmText.find(".globl main"), std::string::npos);
   EXPECT_NE(asmText.find("main:"), std::string::npos);
@@ -50,7 +56,7 @@ TEST(RV32AssemblyEmitterTest, EmitsNoMExtensionOpcodeForHelperCalls) {
   block.insts.insert(block.insts.begin(), MIRInstruction::make(MIROpcode::Call));
   block.insts.front().comment = ".Ltoyc.mul_i32";
 
-  auto asmText = riscv32::emitAssembly(module);
+  auto asmText = riscv32::emitAssembly(allocate(std::move(module)));
   std::regex illegalOpcode(R"((^|\n)\s*(mul|div|rem)\s)");
   EXPECT_NE(asmText.find(".Ltoyc.mul_i32:"), std::string::npos);
   EXPECT_FALSE(std::regex_search(asmText, illegalOpcode));
@@ -83,7 +89,7 @@ TEST(RV32AssemblyEmitterTest, UsesLargeOffsetMaterialization) {
   func.blocks.push_back(block);
   module.functions.push_back(func);
 
-  auto asmText = riscv32::emitAssembly(module);
+  auto asmText = riscv32::emitAssembly(allocate(std::move(module)));
   EXPECT_NE(asmText.find("li t3,"), std::string::npos);
   EXPECT_NE(asmText.find("add t3, sp, t3"), std::string::npos);
 }

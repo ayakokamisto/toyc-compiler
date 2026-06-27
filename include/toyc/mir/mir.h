@@ -221,6 +221,7 @@ struct MIRVerificationResult {
   }
 };
 
+MIRVerificationResult verifyMIRFunction(const MIRFunction& function);
 MIRVerificationResult verifyMIR(const MIRModule& module);
 
 // ── MIR printer ─────────────────────────────────────────────────────────────

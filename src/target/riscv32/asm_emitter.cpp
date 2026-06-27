@@ -1,6 +1,7 @@
 #include "toyc/target/riscv32/asm_emitter.h"
 #include "toyc/mir/mir.h"
 #include "toyc/target/riscv32/registers.h"
+#include "toyc/target/riscv32/spill_all_allocator.h"
 
 #include <algorithm>
 #include <sstream>
@@ -72,12 +73,12 @@ bool fitsI12(int32_t value) {
 
 class Emitter {
 public:
-  explicit Emitter(MIRModule module) : module_(std::move(module)) {}
+  explicit Emitter(const AllocatedMachineModule& module) : module_(module) {}
 
   std::string emit() {
     emitData();
     out_ << "\n.section .text\n";
-    for (auto& func : module_.functions) {
+    for (const auto& func : module_.functions) {
       emitFunction(func);
     }
     emitHelpers();
@@ -85,7 +86,7 @@ public:
   }
 
 private:
-  MIRModule module_;
+  const AllocatedMachineModule& module_;
   std::ostringstream out_;
   const MIRFunction* func_ = nullptr;
   FrameLayout layout_;
@@ -106,9 +107,10 @@ private:
     }
   }
 
-  void emitFunction(MIRFunction& func) {
+  void emitFunction(const AllocatedMachineFunction& allocatedFunction) {
+    const auto& func = allocatedFunction.function;
     func_ = &func;
-    layout_ = FrameLayout::compute(func);
+    layout_ = allocatedFunction.frameLayout;
     vregOffsets_.clear();
     for (const auto& object : func.frameObjects) {
       if (object.kind == FrameObjectKind::VRegHome && object.vregId.has_value()) {
@@ -330,8 +332,8 @@ private:
   }
 
   bool textUses(const std::string& needle) const {
-    for (const auto& func : module_.functions) {
-      for (const auto& block : func.blocks) {
+    for (const auto& allocatedFunction : module_.functions) {
+      for (const auto& block : allocatedFunction.function.blocks) {
         for (const auto& inst : block.insts) {
           if (inst.opcode == MIROpcode::Call && inst.comment == needle) return true;
         }
@@ -441,8 +443,8 @@ private:
 
 } // namespace
 
-std::string emitAssembly(const MIRModule& module) {
-  return Emitter(MIRModule(module)).emit();
+std::string emitAssembly(const AllocatedMachineModule& module) {
+  return Emitter(module).emit();
 }
 
 } // namespace toyc::riscv32
