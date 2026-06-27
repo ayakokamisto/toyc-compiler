@@ -1,5 +1,27 @@
 # Build and Test
 
+## P6 Commands
+
+```bash
+./build/toycc --dump-ssa < input.tc
+./build/toyc-analysis-tests
+./build/toyc-ssa-tests
+```
+
+Full local validation:
+
+```bash
+./build/toyc-frontend-tests
+./build/toyc-sema-tests
+./build/toyc-ir-tests
+./build/toyc-analysis-tests
+./build/toyc-lowering-tests
+./build/toyc-ssa-tests
+./build/toyc-mir-tests
+./build/toyc-riscv32-tests
+./build/toyc-codegen-tests
+```
+
 ## Prerequisites
 
 - C++20 compiler (GCC 13+ or Clang 16+)

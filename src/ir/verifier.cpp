@@ -7,7 +7,11 @@
 #include "toyc/ir/module.h"
 #include "toyc/ir/opcode.h"
 
+#include <algorithm>
+#include <map>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace toyc {
 
@@ -32,7 +36,7 @@ static bool blockExists(const Function& func, BlockId bid) {
   return false;
 }
 
-VerificationResult verifyModule(const Module& module) {
+VerificationResult verifyModule(const Module& module, VerificationMode mode) {
   VerificationResult result;
 
   std::set<uint32_t> globalIds;
@@ -64,7 +68,7 @@ VerificationResult verifyModule(const Module& module) {
   }
 
   for (const auto& func : module.functions()) {
-    auto funcResult = verifyFunction(*func, module);
+    auto funcResult = verifyFunction(*func, module, mode);
     for (auto& err : funcResult.errors) {
       result.addError(std::move(err));
     }
@@ -90,6 +94,11 @@ static void verifyInst(VerificationResult& result, const Function& func, const M
   };
 
   switch (inst.opcode) {
+    case Opcode::Phi:
+      if (func.form() != IRForm::SSA) {
+        result.addError("Phi appears in Canonical Slot IR block " + block.label());
+      }
+      break;
     case Opcode::ConstInt:
       break;
     case Opcode::SlotLoad:
@@ -193,8 +202,21 @@ static void verifyTerminator(VerificationResult& result, const Function& func,
   }
 }
 
-VerificationResult verifyFunction(const Function& func, const Module& module) {
+static VerificationMode effectiveMode(const Function& func, VerificationMode mode) {
+  if (mode != VerificationMode::Auto) return mode;
+  return func.form() == IRForm::SSA ? VerificationMode::SSA : VerificationMode::CanonicalSlot;
+}
+
+VerificationResult verifyFunction(const Function& func, const Module& module, VerificationMode mode) {
   VerificationResult result;
+  mode = effectiveMode(func, mode);
+
+  if (mode == VerificationMode::CanonicalSlot && func.form() != IRForm::CanonicalSlot) {
+    result.addError("Function " + func.name() + " is not Canonical Slot IR");
+  }
+  if (mode == VerificationMode::SSA && func.form() != IRForm::SSA) {
+    result.addError("Function " + func.name() + " is not SSA IR");
+  }
 
   if (func.blocks().empty()) {
     result.addError("Function " + func.name() + " has no blocks");
@@ -214,6 +236,13 @@ VerificationResult verifyFunction(const Function& func, const Module& module) {
     }
 
     for (const auto& inst : bb->instructions()) {
+      if (mode == VerificationMode::CanonicalSlot && inst->opcode == Opcode::Phi) {
+        result.addError("Canonical Slot IR cannot contain phi in block " + bb->label());
+      }
+      if (mode == VerificationMode::SSA &&
+          (inst->opcode == Opcode::SlotLoad || inst->opcode == Opcode::SlotStore)) {
+        result.addError("SSA IR cannot contain promoted slot access in block " + bb->label());
+      }
       verifyInst(result, func, module, *inst, *bb);
     }
 
@@ -229,6 +258,222 @@ VerificationResult verifyFunction(const Function& func, const Module& module) {
     }
   }
 
+  return result;
+}
+
+namespace {
+
+struct DefSite {
+  BlockId block;
+  int index = -1;
+  bool argument = false;
+};
+
+static std::vector<ValueId> normalOperands(const Inst& inst) {
+  switch (inst.opcode) {
+    case Opcode::SlotStore:
+    case Opcode::GlobalStore:
+      return {inst.lhs};
+    case Opcode::Unary:
+      return {inst.unaryOperand};
+    case Opcode::Binary:
+      return {inst.lhs, inst.rhs};
+    case Opcode::Compare:
+      return {inst.cmpLhs, inst.cmpRhs};
+    case Opcode::Call:
+      return inst.arguments;
+    default:
+      return {};
+  }
+}
+
+static bool hasDuplicatePred(const Inst& phi) {
+  std::set<uint32_t> seen;
+  for (const auto& incoming : phi.phiIncoming) {
+    if (!seen.insert(incoming.predecessor.value).second) return true;
+  }
+  return false;
+}
+
+class LocalDominator {
+public:
+  explicit LocalDominator(const Function& func) {
+    std::vector<BlockId> blocks;
+    for (const auto& block : func.blocks()) {
+      blocks.push_back(block->id());
+      all_.insert(block->id());
+    }
+    if (blocks.empty()) return;
+
+    auto entry = func.entryBlock()->id();
+    for (auto block : blocks) {
+      if (block == entry) {
+        doms_[block].insert(block);
+      } else {
+        doms_[block] = all_;
+      }
+    }
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (const auto& blockPtr : func.blocks()) {
+        auto block = blockPtr->id();
+        if (block == entry) continue;
+
+        std::unordered_set<BlockId> next = all_;
+        if (blockPtr->predecessors().empty()) {
+          next.clear();
+        }
+        for (auto pred : blockPtr->predecessors()) {
+          std::unordered_set<BlockId> intersection;
+          for (auto candidate : next) {
+            if (doms_[pred].contains(candidate)) intersection.insert(candidate);
+          }
+          next = std::move(intersection);
+        }
+        next.insert(block);
+        if (next != doms_[block]) {
+          doms_[block] = std::move(next);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  bool dominates(BlockId dominator, BlockId block) const {
+    auto it = doms_.find(block);
+    return it != doms_.end() && it->second.contains(dominator);
+  }
+
+private:
+  std::unordered_set<BlockId> all_;
+  std::unordered_map<BlockId, std::unordered_set<BlockId>> doms_;
+};
+
+} // namespace
+
+VerificationResult verifySSAFunction(const Function& func, const Module& module) {
+  VerificationResult result = verifyFunction(func, module, VerificationMode::SSA);
+  if (func.blocks().empty()) return result;
+
+  LocalDominator dom(func);
+  std::unordered_map<ValueId, DefSite> defs;
+
+  auto entryId = func.entryBlock()->id();
+  for (const auto& param : func.params()) {
+    defs[param.valueId] = DefSite{entryId, -1, true};
+  }
+
+  for (const auto& blockPtr : func.blocks()) {
+    const auto& block = *blockPtr;
+    bool seenNormal = false;
+    int index = 0;
+    for (const auto& inst : block.instructions()) {
+      if (inst->opcode == Opcode::Phi) {
+        if (seenNormal) {
+          result.addError("Phi outside block prefix in block " + block.label());
+        }
+        if (!inst->result.has_value()) {
+          result.addError("Phi missing result in block " + block.label());
+        } else if (!inst->resultType.isI32()) {
+          result.addError("Phi result type must be i32 in block " + block.label());
+        } else if (defs.contains(*inst->result)) {
+          result.addError("Duplicate SSA definition for value " + std::to_string(inst->result->value));
+        } else {
+          defs[*inst->result] = DefSite{block.id(), index, false};
+        }
+      } else {
+        seenNormal = true;
+        if (inst->result.has_value()) {
+          if (defs.contains(*inst->result)) {
+            result.addError("Duplicate SSA definition for value " + std::to_string(inst->result->value));
+          } else {
+            defs[*inst->result] = DefSite{block.id(), index, false};
+          }
+        }
+      }
+      ++index;
+    }
+  }
+
+  auto checkUse = [&](ValueId value, BlockId useBlock, int useIndex, const std::string& ctx) {
+    auto it = defs.find(value);
+    if (it == defs.end()) {
+      result.addError("SSA use of undefined value " + std::to_string(value.value) + " in " + ctx);
+      return;
+    }
+    const auto& def = it->second;
+    if (def.argument) {
+      if (!dom.dominates(def.block, useBlock)) {
+        result.addError("SSA argument value does not dominate use in " + ctx);
+      }
+      return;
+    }
+    if (def.block == useBlock) {
+      if (def.index >= useIndex) {
+        result.addError("SSA value used before definition in " + ctx);
+      }
+    } else if (!dom.dominates(def.block, useBlock)) {
+      result.addError("SSA value definition does not dominate use in " + ctx);
+    }
+  };
+
+  for (const auto& blockPtr : func.blocks()) {
+    const auto& block = *blockPtr;
+    std::set<uint32_t> predSet;
+    for (auto pred : block.predecessors()) predSet.insert(pred.value);
+    int index = 0;
+    for (const auto& inst : block.instructions()) {
+      if (inst->opcode == Opcode::Phi) {
+        if (hasDuplicatePred(*inst)) {
+          result.addError("Phi duplicate predecessor in block " + block.label());
+        }
+        std::set<uint32_t> incomingPreds;
+        for (const auto& incoming : inst->phiIncoming) {
+          incomingPreds.insert(incoming.predecessor.value);
+          if (!predSet.contains(incoming.predecessor.value)) {
+            result.addError("Phi incoming predecessor is not a CFG predecessor in block " + block.label());
+          }
+          auto def = defs.find(incoming.value);
+          if (def == defs.end()) {
+            result.addError("Phi incoming uses undefined value in block " + block.label());
+          } else if (!def->second.argument && def->second.block != incoming.predecessor &&
+                     !dom.dominates(def->second.block, incoming.predecessor)) {
+            result.addError("Phi incoming value does not dominate predecessor edge in block " + block.label());
+          }
+        }
+        if (incomingPreds != predSet) {
+          result.addError("Phi incoming predecessor set mismatch in block " + block.label());
+        }
+      } else {
+        for (auto operand : normalOperands(*inst)) {
+          checkUse(operand, block.id(), index, "instruction of block " + block.label());
+        }
+      }
+      ++index;
+    }
+    if (block.hasTerminator()) {
+      const auto& term = *block.terminator();
+      if (term.opcode == Opcode::CondBr) {
+        checkUse(term.condCondition, block.id(), index, "condbr of block " + block.label());
+      } else if (term.opcode == Opcode::Ret && term.returnValue.has_value()) {
+        checkUse(*term.returnValue, block.id(), index, "ret of block " + block.label());
+      }
+    }
+  }
+
+  return result;
+}
+
+VerificationResult verifySSAModule(const Module& module) {
+  VerificationResult result;
+  for (const auto& func : module.functions()) {
+    auto funcResult = verifySSAFunction(*func, module);
+    for (auto& err : funcResult.errors) {
+      result.addError(std::move(err));
+    }
+  }
   return result;
 }
 

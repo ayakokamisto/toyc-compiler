@@ -1,5 +1,11 @@
 # Development Phases
 
+## Current P6 Completion
+
+P6 implements DominatorTree, Dominance Frontier, Pruned Mem2Reg, complete Phi records, SSA verification, and `--dump-ssa`.
+
+The P5 backend consumes Canonical Slot IR. P7 starts from the SSA optimization pipeline, then adds Out-of-SSA / Phi lowering before backend consumption.
+
 ## P0: Project Scaffold ✅
 
 - Directory structure, CMake build system, module boundaries.

@@ -1,5 +1,15 @@
 # CLAUDE.md
 
+## P6 SSA Boundary
+
+P6 provides `--dump-ssa` as an analysis/debug path:
+
+```text
+Canonical Slot IR -> DominatorTree -> Dominance Frontier -> Mem2Reg -> SSA IR -> SSA Verifier
+```
+
+The P5 RV32 backend consumes Canonical Slot IR. P7 starts the SSA optimization pipeline and the lowering path back to backend-consumable IR.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 项目性质

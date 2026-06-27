@@ -27,13 +27,16 @@ public:
   [[nodiscard]] const std::vector<std::unique_ptr<Inst>>& instructions() const {
     return insts_;
   }
+  [[nodiscard]] std::vector<std::unique_ptr<Inst>>& mutableInstructions() { return insts_; }
 
   /// Append an ordinary instruction. Returns a raw pointer to the appended inst.
   /// Must not be called after a terminator has been set.
   Inst* appendInst(std::unique_ptr<Inst> inst);
+  Inst* prependPhi(std::unique_ptr<Inst> inst);
 
   /// The terminator (Br, CondBr, or Ret). Null if not yet set.
   [[nodiscard]] const Terminator* terminator() const { return term_ ? &*term_ : nullptr; }
+  [[nodiscard]] Terminator* mutableTerminator() { return term_ ? &*term_ : nullptr; }
   [[nodiscard]] bool hasTerminator() const { return term_.has_value(); }
 
   /// Set the terminator. Must not be called twice.

@@ -14,11 +14,11 @@ configure-tests:
 
 # Build (no tests)
 build: configure
-  cmake --build {{build_dir}} -j
+  cmake --build {{build_dir}} --parallel 1
 
 # Build with tests
 build-tests: configure-tests
-  cmake --build {{build_tests_dir}} -j
+  cmake --build {{build_tests_dir}} --parallel 1
 
 # Run frontend tests
 frontend-test: build-tests
@@ -32,9 +32,17 @@ sema-test: build-tests
 ir-test: build-tests
   {{build_tests_dir}}/toyc-ir-tests
 
+# Run analysis tests
+analysis-test: build-tests
+  {{build_tests_dir}}/toyc-analysis-tests
+
 # Run lowering tests
 lowering-test: build-tests
   {{build_tests_dir}}/toyc-lowering-tests
+
+# Run SSA tests
+ssa-test: build-tests
+  {{build_tests_dir}}/toyc-ssa-tests
 
 # Run MIR tests
 mir-test: build-tests
@@ -49,7 +57,7 @@ codegen-test: build-tests
   {{build_tests_dir}}/toyc-codegen-tests
 
 # Run all tests
-test: frontend-test sema-test ir-test lowering-test mir-test riscv32-test codegen-test
+test: frontend-test sema-test ir-test analysis-test lowering-test ssa-test mir-test riscv32-test codegen-test
 
 # Clean build directories
 clean:
@@ -62,11 +70,13 @@ format:
 # Build with coverage instrumentation
 coverage:
   cmake -S . -B {{build_tests_dir}} -DTOYC_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage"
-  cmake --build {{build_tests_dir}} -j
+  cmake --build {{build_tests_dir}} --parallel 1
   {{build_tests_dir}}/toyc-frontend-tests
   {{build_tests_dir}}/toyc-sema-tests
   {{build_tests_dir}}/toyc-ir-tests
+  {{build_tests_dir}}/toyc-analysis-tests
   {{build_tests_dir}}/toyc-lowering-tests
+  {{build_tests_dir}}/toyc-ssa-tests
   {{build_tests_dir}}/toyc-mir-tests
   {{build_tests_dir}}/toyc-riscv32-tests
   {{build_tests_dir}}/toyc-codegen-tests

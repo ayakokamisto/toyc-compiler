@@ -1,5 +1,18 @@
 # Architecture
 
+## P6 Pipeline Boundary
+
+```text
+Canonical Slot IR
+-> DominatorTree / Dominance Frontier
+-> Mem2Reg
+-> SSA IR
+-> SSA Verifier
+-> --dump-ssa
+```
+
+Normal code generation follows `Canonical Slot IR -> P5 MIR -> Spill-All -> Assembly`.
+
 ## Module Dependency Direction
 
 ```

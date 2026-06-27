@@ -3,6 +3,7 @@
 #include "toyc/ir/function.h"
 #include "toyc/ir/module.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace toyc {
@@ -41,6 +42,13 @@ SlotId Function::createSlot(SlotKind kind, std::optional<SymbolId> sym, std::str
   slot.debugName = std::move(debugName);
   slots_.push_back(slot);
   return sid;
+}
+
+void Function::eraseSlots(const std::vector<SlotId>& slots) {
+  slots_.erase(std::remove_if(slots_.begin(), slots_.end(), [&](const Slot& slot) {
+                 return std::find(slots.begin(), slots.end(), slot.id) != slots.end();
+               }),
+               slots_.end());
 }
 
 ValueId Function::createArgumentValue() {

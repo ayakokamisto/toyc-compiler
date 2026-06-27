@@ -7,6 +7,7 @@
 #include "toyc/ir/module.h"
 #include "toyc/ir/opcode.h"
 
+#include <algorithm>
 #include <sstream>
 
 namespace toyc {
@@ -24,6 +25,22 @@ static std::string blockLabel(const Function& func, BlockId bid) {
     if (bb->id() == bid) return bb->label();
   }
   return "block" + std::to_string(bid.value);
+}
+
+static std::vector<PhiIncoming> sortedIncoming(const Function& func, const BasicBlock& block, const Inst& inst) {
+  auto incoming = inst.phiIncoming;
+  auto preds = block.predecessors();
+  std::sort(incoming.begin(), incoming.end(), [&](const PhiIncoming& a, const PhiIncoming& b) {
+    auto predIndex = [&](BlockId pred) {
+      auto it = std::find(preds.begin(), preds.end(), pred);
+      return it == preds.end() ? preds.size() : static_cast<size_t>(std::distance(preds.begin(), it));
+    };
+    auto indexA = predIndex(a.predecessor);
+    auto indexB = predIndex(b.predecessor);
+    if (indexA == indexB) return blockLabel(func, a.predecessor) < blockLabel(func, b.predecessor);
+    return indexA < indexB;
+  });
+  return incoming;
 }
 
 static std::string globalName(const Module& module, GlobalId gid) {
@@ -52,8 +69,8 @@ static void dumpGlobal(std::ostream& out, const IRGlobal& g) {
   out << " value=" << g.staticInitialValue << "\n";
 }
 
-static void dumpInst(std::ostream& out, const Module& module, const Inst& inst,
-                     const std::string& indent) {
+static void dumpInst(std::ostream& out, const Module& module, const Function& func,
+                     const BasicBlock& block, const Inst& inst, const std::string& indent) {
   if (inst.result.has_value()) {
     out << indent << valueStr(*inst.result) << " = ";
   } else {
@@ -61,6 +78,16 @@ static void dumpInst(std::ostream& out, const Module& module, const Inst& inst,
   }
 
   switch (inst.opcode) {
+    case Opcode::Phi: {
+      out << "phi ";
+      auto incoming = sortedIncoming(func, block, inst);
+      for (size_t i = 0; i < incoming.size(); ++i) {
+        if (i > 0) out << ", ";
+        out << "[" << blockLabel(func, incoming[i].predecessor) << ": "
+            << valueStr(incoming[i].value) << "]";
+      }
+      break;
+    }
     case Opcode::ConstInt:
       out << "const " << inst.constValue;
       break;
@@ -148,7 +175,8 @@ static void dumpFunction(std::ostream& out, const Module& module, const Function
     if (i > 0) out << ", ";
     out << "i32 " << valueStr(func.params()[i].valueId);
   }
-  out << ") -> " << func.returnType().toString() << "\n";
+  out << ") -> " << func.returnType().toString()
+      << " form=" << (func.form() == IRForm::SSA ? "ssa" : "canonical-slot") << "\n";
 
   if (!func.slots().empty()) {
     out << "      Slots\n";
@@ -161,7 +189,7 @@ static void dumpFunction(std::ostream& out, const Module& module, const Function
   for (const auto& bb : func.blocks()) {
     out << "        " << bb->label() << ":\n";
     for (const auto& inst : bb->instructions()) {
-      dumpInst(out, module, *inst, "          ");
+      dumpInst(out, module, func, *bb, *inst, "          ");
     }
     if (bb->hasTerminator()) {
       dumpTerminator(out, module, *bb->terminator(), func, "          ");

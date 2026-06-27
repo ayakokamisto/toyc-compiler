@@ -22,6 +22,8 @@ CompilerOptions CompilerOptions::parse(int argc, char* argv[]) {
       opts.dumpSema = true;
     } else if (std::strcmp(argv[i], "--dump-ir") == 0) {
       opts.dumpIr = true;
+    } else if (std::strcmp(argv[i], "--dump-ssa") == 0) {
+      opts.dumpSsa = true;
     } else if (std::strcmp(argv[i], "--dump-mir") == 0) {
       opts.dumpMir = true;
     } else if (std::strcmp(argv[i], "-v") == 0 || std::strcmp(argv[i], "--verbose") == 0) {
@@ -35,7 +37,7 @@ CompilerOptions CompilerOptions::parse(int argc, char* argv[]) {
   // Conflicting flags: any two dump modes together is an error.
   int dumpCount = (opts.dumpTokens ? 1 : 0) + (opts.dumpAst ? 1 : 0) +
                   (opts.dumpSema ? 1 : 0) + (opts.dumpIr ? 1 : 0) +
-                  (opts.dumpMir ? 1 : 0);
+                  (opts.dumpSsa ? 1 : 0) + (opts.dumpMir ? 1 : 0);
   if (dumpCount > 1) {
     std::cerr << "toycc: only one dump mode can be used\n";
     opts.hasCommandLineError = true;
@@ -56,6 +58,7 @@ Options:
   --dump-ast        Parse input and dump AST to stderr
   --dump-sema       Analyze and dump semantic model to stderr
   --dump-ir         Lower to IR and dump to stderr
+  --dump-ssa        Lower to SSA IR and dump to stderr
   --dump-mir        Lower to MIR and dump to stderr
   -v, --verbose     Verbose output
   -h, --help        Show this help message

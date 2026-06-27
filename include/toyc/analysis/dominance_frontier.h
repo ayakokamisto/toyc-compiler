@@ -4,21 +4,23 @@
 
 #include "toyc/support/ids.h"
 
+#include <unordered_map>
 #include <vector>
 
 namespace toyc {
 
 class DominatorTree;
+class Function;
 
-/// Dominance frontier sets for each block.
-/// P0 stub: empty structure.
-struct DominanceFrontier {
-  /// For each block, its dominance frontier set.
-  std::vector<std::vector<BlockId>> frontiers;
+class DominanceFrontier {
+public:
+  DominanceFrontier(const Function& function, const DominatorTree& dominators);
 
-  /// Compute dominance frontier from a dominator tree.
-  /// P0 stub: does nothing.
-  void compute(const DominatorTree& domTree);
+  [[nodiscard]] const std::vector<BlockId>& frontier(BlockId block) const;
+
+private:
+  std::vector<BlockId> empty_;
+  std::unordered_map<BlockId, std::vector<BlockId>> frontiers_;
 };
 
 } // namespace toyc

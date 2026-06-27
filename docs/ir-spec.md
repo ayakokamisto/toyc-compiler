@@ -1,5 +1,17 @@
 # IR Specification
 
+## P6 SSA Form
+
+`IRForm::CanonicalSlot` is the backend input form with `load.slot` and `store.slot`. `IRForm::SSA` is produced by Mem2Reg and uses Phi instructions at block prefixes.
+
+Phi format:
+
+```text
+%v7 = phi [entry: %v2], [if.then.0: %v5]
+```
+
+SSA verification checks unique definitions, Phi incoming predecessor coverage, use dominance, and absence of promoted slot accesses.
+
 ## Overview
 
 ToyC uses a two-phase IR:

@@ -13,11 +13,17 @@
 #include "toyc/ir/value.h"
 #include "toyc/support/ids.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace toyc {
+
+enum class IRForm : uint8_t {
+  CanonicalSlot,
+  SSA,
+};
 
 /// A parameter with its source symbol and IR value.
 struct ParamInfo {
@@ -38,6 +44,8 @@ public:
   [[nodiscard]] IRType returnType() const { return returnType_; }
   [[nodiscard]] bool isInternal() const { return isInternal_; }
   void setInternal(bool v) { isInternal_ = v; }
+  [[nodiscard]] IRForm form() const noexcept { return form_; }
+  void setForm(IRForm form) noexcept { form_ = form; }
 
   /// Basic blocks.
   [[nodiscard]] const std::vector<std::unique_ptr<BasicBlock>>& blocks() const { return blocks_; }
@@ -55,8 +63,10 @@ public:
 
   /// Slots.
   [[nodiscard]] const std::vector<Slot>& slots() const { return slots_; }
+  [[nodiscard]] std::vector<Slot>& mutableSlots() { return slots_; }
   SlotId createSlot(SlotKind kind, std::optional<SymbolId> sym = std::nullopt,
                     std::string debugName = "");
+  void eraseSlots(const std::vector<SlotId>& slots);
 
   /// Values.
   [[nodiscard]] const std::vector<Value>& values() const { return values_; }
@@ -71,6 +81,7 @@ private:
   std::string name_;
   IRType returnType_;
   bool isInternal_ = false;
+  IRForm form_ = IRForm::CanonicalSlot;
   Module* parentModule_;
   std::vector<std::unique_ptr<BasicBlock>> blocks_;
   std::vector<ParamInfo> params_;

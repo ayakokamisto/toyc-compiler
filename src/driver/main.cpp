@@ -13,6 +13,7 @@
 #include "toyc/lowering/ast_to_ir.h"
 #include "toyc/mir/mir.h"
 #include "toyc/mir/verifier.h"
+#include "toyc/passes/mem2reg.h"
 #include "toyc/sema/semantic_analyzer.h"
 #include "toyc/sema/semantic_model.h"
 #include "toyc/support/diagnostics.h"
@@ -21,6 +22,7 @@
 #include "toyc/target/riscv32/spill_all_allocator.h"
 
 #include <iostream>
+#include <exception>
 #include <sstream>
 #include <string>
 
@@ -127,8 +129,8 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  // --dump-ir / --dump-mir: stop after the requested lowered representation.
-  if (opts.dumpIr || opts.dumpMir) {
+  // --dump-ir / --dump-ssa / --dump-mir: stop after the requested lowered representation.
+  if (opts.dumpIr || opts.dumpSsa || opts.dumpMir) {
     toyc::DiagnosticEngine diag;
     toyc::Lexer lexer(source, diag);
     auto tokens = lexer.tokenize();
@@ -177,8 +179,8 @@ int main(int argc, char* argv[]) {
     // Rebuild CFG.
     toyc::rebuildCFG(*irModule);
 
-    // Verify.
-    auto verifyResult = toyc::verifyModule(*irModule);
+    // Verify Canonical Slot IR.
+    auto verifyResult = toyc::verifyModule(*irModule, toyc::VerificationMode::CanonicalSlot);
     if (!verifyResult.ok) {
       for (const auto& err : verifyResult.errors) {
         std::cerr << "IR verification error: " << err << "\n";
@@ -187,6 +189,28 @@ int main(int argc, char* argv[]) {
     }
 
     if (opts.dumpIr) {
+      toyc::dumpIR(*irModule, std::cerr);
+      return 0;
+    }
+
+    if (opts.dumpSsa) {
+      try {
+        toyc::Mem2RegPass mem2reg;
+        for (const auto& func : irModule->functions()) {
+          (void)mem2reg.run(*func);
+        }
+      } catch (const std::exception& ex) {
+        std::cerr << "SSA construction error: " << ex.what() << "\n";
+        return 1;
+      }
+      toyc::rebuildCFG(*irModule);
+      auto ssaVerify = toyc::verifySSAModule(*irModule);
+      if (!ssaVerify.ok) {
+        for (const auto& err : ssaVerify.errors) {
+          std::cerr << "SSA verification error: " << err << "\n";
+        }
+        return 1;
+      }
       toyc::dumpIR(*irModule, std::cerr);
       return 0;
     }

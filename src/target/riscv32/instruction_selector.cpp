@@ -302,6 +302,12 @@ void RV32InstructionSelector::lowerBlock(const BasicBlock& bb) {
 // ── Lower a function ────────────────────────────────────────────────────────
 
 void RV32InstructionSelector::lowerFunction(const Function& func) {
+  if (func.form() != IRForm::CanonicalSlot) {
+    diag_.error(SourceLocation{}, "RV32 baseline backend requires Canonical Slot IR");
+    hasError_ = true;
+    return;
+  }
+
   MIRFunction mirFunc;
   mirFunc.sourceFuncId = func.id();
   mirFunc.name = func.name();

@@ -69,6 +69,8 @@ target_link_libraries(toyc_ir PUBLIC toyc_support)
 # analysis → ir
 toyc_add_library(toyc_analysis
   src/analysis/cfg.cpp
+  src/analysis/dominator_tree.cpp
+  src/analysis/dominance_frontier.cpp
 )
 target_link_libraries(toyc_analysis PUBLIC toyc_ir)
 
@@ -86,6 +88,7 @@ target_link_libraries(toyc_lowering PUBLIC
 # passes → analysis
 toyc_add_library(toyc_passes
   src/passes/scaffold.cpp
+  src/passes/mem2reg.cpp
 )
 target_link_libraries(toyc_passes PUBLIC toyc_analysis)
 
@@ -110,6 +113,7 @@ add_executable(toycc
 )
 target_link_libraries(toycc PRIVATE
   toyc_lowering
+  toyc_passes
   toyc_riscv32
 )
 toyc_set_warnings(toycc)
@@ -149,6 +153,16 @@ if(TOYC_BUILD_TESTS)
   )
   toyc_set_warnings(toyc-ir-tests)
 
+  add_executable(toyc-analysis-tests
+    tests/analysis/dominator_tree_test.cpp
+    tests/analysis/dominance_frontier_test.cpp
+  )
+  target_link_libraries(toyc-analysis-tests PRIVATE
+    GTest::gtest_main
+    toyc_analysis
+  )
+  toyc_set_warnings(toyc-analysis-tests)
+
   add_executable(toyc-sema-tests
     tests/sema/scope_test.cpp
     tests/sema/symbol_test.cpp
@@ -177,6 +191,19 @@ if(TOYC_BUILD_TESTS)
     toyc_lowering
   )
   toyc_set_warnings(toyc-lowering-tests)
+
+  add_executable(toyc-ssa-tests
+    tests/passes/mem2reg_test.cpp
+    tests/passes/ssa_verifier_test.cpp
+    tests/passes/driver_dump_ssa_test.cpp
+  )
+  target_link_libraries(toyc-ssa-tests PRIVATE
+    GTest::gtest_main
+    toyc_lowering
+    toyc_passes
+    toyc_riscv32
+  )
+  toyc_set_warnings(toyc-ssa-tests)
 
   add_executable(toyc-mir-tests
     tests/mir/mir_basic_test.cpp

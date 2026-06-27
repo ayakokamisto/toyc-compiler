@@ -3,6 +3,7 @@
 #include "toyc/ir/builder.h"
 
 #include <cassert>
+#include <stdexcept>
 
 namespace toyc {
 
@@ -158,6 +159,37 @@ std::optional<ValueId> IRBuilder::emitCall(FunctionId callee, std::span<const Va
   inst->arguments.assign(arguments.begin(), arguments.end());
   bb->appendInst(std::move(inst));
   return result;
+}
+
+Inst* IRBuilder::createPhi(BlockId block, IRType type) {
+  assert(func_ && "No function set");
+  BasicBlock* target = nullptr;
+  for (auto& bb : func_->blocks()) {
+    if (bb->id() == block) {
+      target = bb.get();
+      break;
+    }
+  }
+  if (!target) {
+    throw std::runtime_error("createPhi target block does not belong to function");
+  }
+  auto inst = std::make_unique<Inst>();
+  inst->opcode = Opcode::Phi;
+  inst->resultType = type;
+  inst->result = allocValue();
+  return target->prependPhi(std::move(inst));
+}
+
+void IRBuilder::addPhiIncoming(Inst& phi, BlockId predecessor, ValueId value) {
+  if (phi.opcode != Opcode::Phi) {
+    throw std::runtime_error("addPhiIncoming expects phi");
+  }
+  for (const auto& incoming : phi.phiIncoming) {
+    if (incoming.predecessor == predecessor) {
+      throw std::runtime_error("duplicate phi incoming predecessor");
+    }
+  }
+  phi.phiIncoming.push_back(PhiIncoming{predecessor, value});
 }
 
 void IRBuilder::emitBranch(BlockId target) {

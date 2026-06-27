@@ -1,5 +1,39 @@
 # ToyC Compiler
 
+## P6 Status
+
+P6 adds an independent SSA construction path:
+
+```text
+Canonical Slot IR -> DominatorTree -> Dominance Frontier -> Mem2Reg -> SSA IR -> SSA Verifier -> --dump-ssa
+```
+
+The normal `toycc` path still emits RISC-V32 assembly through the P5 Canonical Slot IR backend. `--dump-ssa` writes SSA IR to stderr, keeps stdout empty, and accepts `-opt` as an equivalent debug combination for this phase.
+
+Local test binaries:
+
+```bash
+./build/toyc-analysis-tests
+./build/toyc-ssa-tests
+```
+
+## P6 Status
+
+P6 adds an independent SSA construction path:
+
+```text
+Canonical Slot IR -> DominatorTree -> Dominance Frontier -> Mem2Reg -> SSA IR -> SSA Verifier -> --dump-ssa
+```
+
+The normal `toycc` path still emits RISC-V32 assembly through the P5 Canonical Slot IR backend. `--dump-ssa` writes SSA IR to stderr, keeps stdout empty, and accepts `-opt` as an equivalent debug combination for this phase.
+
+Local test binaries:
+
+```bash
+./build/toyc-analysis-tests
+./build/toyc-ssa-tests
+```
+
 ToyC 语言编译器 — 武汉大学编译原理课程实践项目。
 
 ## 目标

@@ -13,6 +13,16 @@ Inst* BasicBlock::appendInst(std::unique_ptr<Inst> inst) {
   return raw;
 }
 
+Inst* BasicBlock::prependPhi(std::unique_ptr<Inst> inst) {
+  auto* raw = inst.get();
+  auto insertIt = insts_.begin();
+  while (insertIt != insts_.end() && (*insertIt)->opcode == Opcode::Phi) {
+    ++insertIt;
+  }
+  insts_.insert(insertIt, std::move(inst));
+  return raw;
+}
+
 void BasicBlock::setTerminator(Terminator term) {
   term_ = std::move(term);
 }

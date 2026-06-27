@@ -60,6 +60,9 @@ public:
   /// Function call. Pass returnsValue=true if callee returns i32, false for void.
   std::optional<ValueId> emitCall(FunctionId callee, std::span<const ValueId> arguments, bool returnsValue = true);
 
+  Inst* createPhi(BlockId block, IRType type);
+  void addPhiIncoming(Inst& phi, BlockId predecessor, ValueId value);
+
   /// Terminators.
   void emitBranch(BlockId target);
   void emitCondBranch(ValueId condition, BlockId trueTarget, BlockId falseTarget);

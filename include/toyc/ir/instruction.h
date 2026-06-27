@@ -17,6 +17,11 @@ namespace toyc {
 
 /// Discriminated instruction — stores opcode and all possible operand fields.
 /// Fields not relevant to the current opcode are ignored.
+struct PhiIncoming {
+  BlockId predecessor;
+  ValueId value;
+};
+
 struct Inst {
   Opcode opcode = Opcode::ConstInt;
   IRType resultType = VoidIRType;
@@ -48,6 +53,9 @@ struct Inst {
   // Call
   FunctionId callee;
   std::vector<ValueId> arguments;
+
+  // Phi
+  std::vector<PhiIncoming> phiIncoming;
 };
 
 // ── Terminators ────────────────────────────────────────────────────────────

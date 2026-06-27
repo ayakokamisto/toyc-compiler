@@ -33,6 +33,8 @@ enum class ComparePredicate : uint8_t {
 
 /// Instruction opcodes.
 enum class Opcode : uint8_t {
+  Phi,          ///< %v = phi [pred: %v], ...
+
   // Constants
   ConstInt,     ///< %v = const <value>
 
@@ -60,6 +62,7 @@ enum class Opcode : uint8_t {
 
 constexpr std::string_view opcodeName(Opcode op) {
   switch (op) {
+    case Opcode::Phi:        return "phi";
     case Opcode::ConstInt:   return "const";
     case Opcode::SlotLoad:   return "load.slot";
     case Opcode::SlotStore:  return "store.slot";
