@@ -16,7 +16,8 @@ namespace toyc {
 /// Lexer: converts source text into a sequence of tokens.
 class Lexer {
 public:
-  /// @param source   The ToyC source text (must outlive the Lexer).
+  /// @param source   The ToyC source text. Lexer stores it as std::string_view;
+  ///                 callers must keep it valid until tokenize() returns.
   /// @param diag     Diagnostic engine for error reporting.
   Lexer(std::string_view source, DiagnosticEngine& diag);
 

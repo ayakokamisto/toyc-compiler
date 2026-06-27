@@ -16,6 +16,7 @@ struct CompilerOptions {
   bool dumpAst = false;            ///< --dump-ast was passed.
   bool dumpSema = false;           ///< --dump-sema was passed.
   bool dumpIr = false;             ///< --dump-ir was passed.
+  bool dumpMir = false;            ///< --dump-mir was passed.
   bool hasCommandLineError = false; ///< Unknown args or conflicting flags.
 
   /// Parse arguments. Returns the parsed options.

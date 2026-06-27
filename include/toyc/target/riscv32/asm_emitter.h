@@ -1,20 +1,22 @@
 #pragma once
-/// RISC-V32 assembly emitter.
-/// Writes RISC-V32 assembly to an output stream.
-/// This is a P0 placeholder — real emission will be implemented in P5+.
+/// RISC-V32 Assembly Emitter.
+///
+/// Takes a MIRModule and emits RISC-V32 assembly text.
+/// Internally applies SpillAll expansion: every VReg is stored in a
+/// frame slot, and each MIR instruction is expanded to load/operate/store
+/// sequences using scratch registers.
 
-#include <ostream>
 #include <string>
 
 namespace toyc {
 
-class Module;
+struct MIRModule;
 
 namespace riscv32 {
 
-/// Emit RISC-V32 assembly for the given IR module.
-/// P0 stub: writes a comment to the output.
-void emitAssembly(const Module& module, std::ostream& out);
+/// Emit RISC-V32 assembly for the given MIR module.
+/// Returns the assembly text as a string.
+std::string emitAssembly(const MIRModule& module);
 
 } // namespace riscv32
 } // namespace toyc

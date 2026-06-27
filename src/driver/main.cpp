@@ -11,9 +11,12 @@
 #include "toyc/ir/printer.h"
 #include "toyc/ir/verifier.h"
 #include "toyc/lowering/ast_to_ir.h"
+#include "toyc/mir/instruction_selector.h"
+#include "toyc/mir/mir.h"
 #include "toyc/sema/semantic_analyzer.h"
 #include "toyc/sema/semantic_model.h"
 #include "toyc/support/diagnostics.h"
+#include "toyc/target/riscv32/asm_emitter.h"
 
 #include <iostream>
 #include <sstream>
@@ -122,8 +125,8 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  // --dump-ir: lex, parse, analyze, lower, dump IR to stderr, then exit.
-  if (opts.dumpIr) {
+  // --dump-ir / --dump-mir: stop after the requested lowered representation.
+  if (opts.dumpIr || opts.dumpMir) {
     toyc::DiagnosticEngine diag;
     toyc::Lexer lexer(source, diag);
     auto tokens = lexer.tokenize();
@@ -181,8 +184,30 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    // Dump IR to stderr.
-    toyc::dumpIR(*irModule, std::cerr);
+    if (opts.dumpIr) {
+      toyc::dumpIR(*irModule, std::cerr);
+      return 0;
+    }
+
+    toyc::RV32InstructionSelector selector(diag);
+    auto mirModule = selector.lower(*irModule);
+    if (diag.hasErrors() || !mirModule.has_value()) {
+      for (const auto& d : diag.diagnostics()) {
+        std::cerr << d.location.line << ":" << d.location.column
+                  << ": error: " << d.message << "\n";
+      }
+      return 1;
+    }
+
+    auto mirVerify = toyc::verifyMIR(*mirModule);
+    if (!mirVerify.ok) {
+      for (const auto& err : mirVerify.errors) {
+        std::cerr << "MIR verification error: " << err << "\n";
+      }
+      return 1;
+    }
+
+    toyc::dumpMIR(*mirModule, std::cerr);
     return 0;
   }
 
@@ -243,9 +268,27 @@ int main(int argc, char* argv[]) {
       }
       return 1;
     }
+
+    toyc::RV32InstructionSelector selector(diag);
+    auto mirModule = selector.lower(*irModule);
+    if (diag.hasErrors() || !mirModule.has_value()) {
+      for (const auto& d : diag.diagnostics()) {
+        std::cerr << d.location.line << ":" << d.location.column
+                  << ": error: " << d.message << "\n";
+      }
+      return 1;
+    }
+
+    auto mirVerify = toyc::verifyMIR(*mirModule);
+    if (!mirVerify.ok) {
+      for (const auto& err : mirVerify.errors) {
+        std::cerr << "MIR verification error: " << err << "\n";
+      }
+      return 1;
+    }
+
+    std::cout << toyc::riscv32::emitAssembly(*mirModule);
   }
 
-  // Normal mode: IR lowering done, but RV32 backend not implemented.
-  std::cerr << "IR lowering implemented; RV32 backend not implemented.\n";
-  return 1;
+  return 0;
 }

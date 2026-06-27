@@ -91,9 +91,10 @@ target_link_libraries(toyc_passes PUBLIC toyc_analysis)
 
 # mir → support
 toyc_add_library(toyc_mir
-  src/mir/scaffold.cpp
+  src/mir/mir.cpp
+  src/mir/instruction_selector.cpp
 )
-target_link_libraries(toyc_mir PUBLIC toyc_support)
+target_link_libraries(toyc_mir PUBLIC toyc_support toyc_ir)
 
 # riscv32 → mir
 toyc_add_library(toyc_riscv32
@@ -108,6 +109,8 @@ add_executable(toycc
 )
 target_link_libraries(toycc PRIVATE
   toyc_lowering
+  toyc_mir
+  toyc_riscv32
 )
 toyc_set_warnings(toycc)
 
@@ -174,4 +177,33 @@ if(TOYC_BUILD_TESTS)
     toyc_lowering
   )
   toyc_set_warnings(toyc-lowering-tests)
+
+  add_executable(toyc-mir-tests
+    tests/mir/mir_basic_test.cpp
+  )
+  target_link_libraries(toyc-mir-tests PRIVATE
+    GTest::gtest_main
+    toyc_mir
+  )
+  toyc_set_warnings(toyc-mir-tests)
+
+  add_executable(toyc-riscv32-tests
+    tests/target/riscv32/assembly_emitter_test.cpp
+  )
+  target_link_libraries(toyc-riscv32-tests PRIVATE
+    GTest::gtest_main
+    toyc_riscv32
+  )
+  toyc_set_warnings(toyc-riscv32-tests)
+
+  add_executable(toyc-codegen-tests
+    tests/target/riscv32/codegen_driver_test.cpp
+  )
+  target_link_libraries(toyc-codegen-tests PRIVATE
+    GTest::gtest_main
+    toyc_lowering
+    toyc_mir
+    toyc_riscv32
+  )
+  toyc_set_warnings(toyc-codegen-tests)
 endif()

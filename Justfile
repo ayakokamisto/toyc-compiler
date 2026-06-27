@@ -32,8 +32,24 @@ sema-test: build-tests
 ir-test: build-tests
   {{build_tests_dir}}/toyc-ir-tests
 
+# Run lowering tests
+lowering-test: build-tests
+  {{build_tests_dir}}/toyc-lowering-tests
+
+# Run MIR tests
+mir-test: build-tests
+  {{build_tests_dir}}/toyc-mir-tests
+
+# Run RISC-V32 tests
+riscv32-test: build-tests
+  {{build_tests_dir}}/toyc-riscv32-tests
+
+# Run codegen tests
+codegen-test: build-tests
+  {{build_tests_dir}}/toyc-codegen-tests
+
 # Run all tests
-test: frontend-test sema-test ir-test
+test: frontend-test sema-test ir-test lowering-test mir-test riscv32-test codegen-test
 
 # Clean build directories
 clean:
@@ -50,3 +66,7 @@ coverage:
   {{build_tests_dir}}/toyc-frontend-tests
   {{build_tests_dir}}/toyc-sema-tests
   {{build_tests_dir}}/toyc-ir-tests
+  {{build_tests_dir}}/toyc-lowering-tests
+  {{build_tests_dir}}/toyc-mir-tests
+  {{build_tests_dir}}/toyc-riscv32-tests
+  {{build_tests_dir}}/toyc-codegen-tests
