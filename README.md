@@ -1,6 +1,6 @@
 # ToyC Compiler
 
-## P6 Status
+## P7A Status
 
 P6 adds an independent SSA construction path:
 
@@ -8,7 +8,7 @@ P6 adds an independent SSA construction path:
 Canonical Slot IR -> DominatorTree -> Dominance Frontier -> Mem2Reg -> SSA IR -> SSA Verifier -> --dump-ssa
 ```
 
-The normal `toycc` path still emits RISC-V32 assembly through the P5 Canonical Slot IR backend. `--dump-ssa` writes SSA IR to stderr, keeps stdout empty, and accepts `-opt` as an equivalent debug combination for this phase.
+The normal `toycc` path still emits RISC-V32 assembly through the P5 Canonical Slot IR backend. `toycc -opt` now runs SSA optimization, lowers Phi back to Canonical Slot IR, then reuses the P5 backend.
 
 Local test binaries:
 
@@ -64,14 +64,14 @@ IR 特点：
 
 ```bash
 cmake -S . -B build
-cmake --build build -j
+cmake --build build --parallel 1
 ```
 
 ## 开启本地测试
 
 ```bash
 cmake -S . -B build -DTOYC_BUILD_TESTS=ON
-cmake --build build -j
+cmake --build build --parallel 1
 ./build/toyc-frontend-tests
 ./build/toyc-sema-tests
 ./build/toyc-ir-tests

@@ -41,6 +41,7 @@ public:
 
   /// Set the terminator. Must not be called twice.
   void setTerminator(Terminator term);
+  void clearTerminator();
 
   /// CFG edges — set by rebuildCFG(), not by lowering.
   [[nodiscard]] const std::vector<BlockId>& successors() const { return succs_; }

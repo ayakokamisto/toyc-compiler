@@ -20,6 +20,15 @@ BasicBlock* Function::createBlock(std::string label) {
   return raw;
 }
 
+bool Function::eraseBlock(BlockId block) {
+  auto oldSize = blocks_.size();
+  blocks_.erase(std::remove_if(blocks_.begin(), blocks_.end(), [&](const auto& bb) {
+                  return bb->id() == block;
+                }),
+                blocks_.end());
+  return blocks_.size() != oldSize;
+}
+
 BasicBlock* Function::entryBlock() const {
   return blocks_.empty() ? nullptr : blocks_.front().get();
 }
@@ -49,6 +58,13 @@ void Function::eraseSlots(const std::vector<SlotId>& slots) {
                  return std::find(slots.begin(), slots.end(), slot.id) != slots.end();
                }),
                slots_.end());
+}
+
+void Function::eraseValues(const std::vector<ValueId>& values) {
+  values_.erase(std::remove_if(values_.begin(), values_.end(), [&](const Value& value) {
+                  return std::find(values.begin(), values.end(), value.id) != values.end();
+                }),
+                values_.end());
 }
 
 ValueId Function::createArgumentValue() {

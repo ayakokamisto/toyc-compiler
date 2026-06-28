@@ -1,6 +1,6 @@
 # Architecture
 
-## P6 Pipeline Boundary
+## P6 / P7A Pipeline Boundary
 
 ```text
 Canonical Slot IR
@@ -12,6 +12,11 @@ Canonical Slot IR
 ```
 
 Normal code generation follows `Canonical Slot IR -> P5 MIR -> Spill-All -> Assembly`.
+
+Optimized `toycc -opt` code generation follows
+`Canonical Slot IR -> removeUnreachableBlocks -> Mem2Reg -> SSA Verifier ->
+InstCombineLite / SCCP / SimplifyCFG / DCE fixed point -> SSA Verifier ->
+Out-of-SSA / Phi lowering -> Canonical Slot IR Verifier -> P5 MIR -> Spill-All -> Assembly`.
 
 ## Module Dependency Direction
 
@@ -62,10 +67,10 @@ Source (stdin)
 ### 2. Optimizing SSA IR
 
 - After Mem2Reg, mutable slots are promoted to SSA values.
-- Each `Value` has a unique `ValueId`; def-use chains are maintained via `Use` objects.
+- Each `Value` has a unique `ValueId`; current passes rebuild use information by scanning operands.
 - `Phi` nodes merge values at CFG join points.
 - `BasicBlock` → `Function` → `Module` hierarchy.
-- Optimization passes (GVN, LICM, DCE, etc.) operate on this IR.
+- P7A optimization passes operate on this IR and lower back to Canonical Slot IR before P5.
 
 ### 3. MIR (Machine IR)
 

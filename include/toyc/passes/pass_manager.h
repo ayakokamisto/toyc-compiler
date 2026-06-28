@@ -5,23 +5,24 @@
 #include "toyc/passes/pass.h"
 
 #include <memory>
+#include <ostream>
 #include <vector>
 
 namespace toyc {
 
-/// Manages and runs a sequence of passes.
-class PassManager {
+class Module;
+
+class FunctionPassManager {
 public:
-  PassManager() = default;
+  FunctionPassManager() = default;
 
-  /// Add a pass to the pipeline. Takes ownership.
-  void addPass(std::unique_ptr<Pass> pass);
+  void add(std::unique_ptr<FunctionPass> pass);
 
-  /// Run all passes on the module.
-  void run(Module& module);
+  [[nodiscard]] bool runToFixedPoint(Function& function, const Module& module,
+                                     std::size_t maxIterations, std::ostream& diagnostics);
 
 private:
-  std::vector<std::unique_ptr<Pass>> passes_;
+  std::vector<std::unique_ptr<FunctionPass>> passes_;
 };
 
 } // namespace toyc

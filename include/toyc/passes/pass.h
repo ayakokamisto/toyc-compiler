@@ -1,23 +1,21 @@
 #pragma once
 /// Pass interface — base class for all optimization and transformation passes.
 
-#include <string>
+#include "toyc/ir/function.h"
+
+#include <string_view>
 
 namespace toyc {
 
-class Module;
+struct PassResult {
+  bool changed = false;
+};
 
-/// Base class for all compiler passes.
-class Pass {
+class FunctionPass {
 public:
-  virtual ~Pass() = default;
-
-  /// Human-readable name of this pass.
-  [[nodiscard]] virtual const char* name() const = 0;
-
-  /// Run this pass on the given module.
-  /// Returns true if the module was modified.
-  virtual bool run(Module& module) = 0;
+  virtual ~FunctionPass() = default;
+  [[nodiscard]] virtual std::string_view name() const = 0;
+  virtual PassResult run(Function& function) = 0;
 };
 
 } // namespace toyc

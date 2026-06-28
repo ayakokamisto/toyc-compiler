@@ -1,10 +1,10 @@
 # Development Phases
 
-## Current P6 Completion
+## Current P7A Completion
 
 P6 implements DominatorTree, Dominance Frontier, Pruned Mem2Reg, complete Phi records, SSA verification, and `--dump-ssa`.
 
-The P5 backend consumes Canonical Slot IR. P7 starts from the SSA optimization pipeline, then adds Out-of-SSA / Phi lowering before backend consumption.
+P7A adds `-opt` SSA optimization through InstCombineLite, SCCP, SimplifyCFG, DCE, and Out-of-SSA / Phi lowering back to Canonical Slot IR before P5 backend consumption.
 
 ## P0: Project Scaffold ✅
 
@@ -76,6 +76,7 @@ The P5 backend consumes Canonical Slot IR. P7 starts from the SSA optimization p
 - Constant folding in IR.
 - Copy propagation.
 - Simple peephole optimizations.
+- `-opt` routes through SSA optimization and returns to Canonical Slot IR before P5.
 
 ## P8: GVN / LICM / Register Allocation
 

@@ -33,11 +33,11 @@ Full local validation:
 ```bash
 # Basic build (no tests)
 cmake -S . -B build
-cmake --build build -j
+cmake --build build --parallel 1
 
 # With tests
 cmake -S . -B build -DTOYC_BUILD_TESTS=ON
-cmake --build build -j
+cmake --build build --parallel 1
 ```
 
 ## Run Compiler
@@ -106,5 +106,5 @@ just coverage           # Build with coverage and run tests
 
 ```bash
 cmake -S . -B build -DTOYC_WARNINGS_AS_ERRORS=ON
-cmake --build build -j
+cmake --build build --parallel 1
 ```

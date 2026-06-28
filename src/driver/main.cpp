@@ -13,7 +13,14 @@
 #include "toyc/lowering/ast_to_ir.h"
 #include "toyc/mir/mir.h"
 #include "toyc/mir/verifier.h"
+#include "toyc/passes/dce.h"
+#include "toyc/passes/inst_combine.h"
 #include "toyc/passes/mem2reg.h"
+#include "toyc/passes/out_of_ssa.h"
+#include "toyc/passes/pass_manager.h"
+#include "toyc/passes/sccp.h"
+#include "toyc/passes/simplify_cfg.h"
+#include "toyc/passes/ir_utils.h"
 #include "toyc/sema/semantic_analyzer.h"
 #include "toyc/sema/semantic_model.h"
 #include "toyc/support/diagnostics.h"
@@ -23,8 +30,78 @@
 
 #include <iostream>
 #include <exception>
+#include <memory>
 #include <sstream>
 #include <string>
+
+namespace {
+
+bool verifyCanonicalOrReport(toyc::Module& module, std::ostream& err) {
+  auto verify = toyc::verifyModule(module, toyc::VerificationMode::CanonicalSlot);
+  if (verify.ok) return true;
+  for (const auto& message : verify.errors) {
+    err << "IR verification error: " << message << "\n";
+  }
+  return false;
+}
+
+bool buildSSA(toyc::Module& module, std::ostream& err) {
+  for (const auto& func : module.functions()) {
+    (void)toyc::removeUnreachableBlocks(*func);
+  }
+  toyc::rebuildCFG(module);
+  if (!verifyCanonicalOrReport(module, err)) return false;
+
+  try {
+    toyc::Mem2RegPass mem2reg;
+    for (const auto& func : module.functions()) {
+      (void)mem2reg.run(*func);
+    }
+  } catch (const std::exception& ex) {
+    err << "internal optimizer diagnostic: SSA construction error: " << ex.what() << "\n";
+    return false;
+  }
+  toyc::rebuildCFG(module);
+  auto ssaVerify = toyc::verifySSAModule(module);
+  if (ssaVerify.ok) return true;
+  for (const auto& message : ssaVerify.errors) {
+    err << "SSA verification error: " << message << "\n";
+  }
+  return false;
+}
+
+bool optimizeSSA(toyc::Module& module, std::ostream& err) {
+  toyc::FunctionPassManager manager;
+  manager.add(std::make_unique<toyc::InstCombineLitePass>());
+  manager.add(std::make_unique<toyc::SCCPPass>());
+  manager.add(std::make_unique<toyc::SimplifyCFGPass>());
+  manager.add(std::make_unique<toyc::DCEPass>());
+
+  for (const auto& func : module.functions()) {
+    if (!manager.runToFixedPoint(*func, module, 8, err)) return false;
+  }
+  toyc::rebuildCFG(module);
+  auto verify = toyc::verifySSAModule(module);
+  if (verify.ok) return true;
+  err << "internal optimizer diagnostic: fixed-point SSA verification failed\n";
+  for (const auto& message : verify.errors) err << "  " << message << "\n";
+  return false;
+}
+
+bool lowerOutOfSSA(toyc::Module& module, std::ostream& err) {
+  toyc::OutOfSSAPass outOfSSA;
+  for (const auto& func : module.functions()) {
+    (void)outOfSSA.run(*func);
+  }
+  toyc::rebuildCFG(module);
+  auto verify = toyc::verifyModule(module, toyc::VerificationMode::CanonicalSlot);
+  if (verify.ok) return true;
+  err << "internal optimizer diagnostic: Out-of-SSA produced invalid Canonical Slot IR\n";
+  for (const auto& message : verify.errors) err << "  " << message << "\n";
+  return false;
+}
+
+} // namespace
 
 int main(int argc, char* argv[]) {
   auto opts = toyc::CompilerOptions::parse(argc, argv);
@@ -180,13 +257,7 @@ int main(int argc, char* argv[]) {
     toyc::rebuildCFG(*irModule);
 
     // Verify Canonical Slot IR.
-    auto verifyResult = toyc::verifyModule(*irModule, toyc::VerificationMode::CanonicalSlot);
-    if (!verifyResult.ok) {
-      for (const auto& err : verifyResult.errors) {
-        std::cerr << "IR verification error: " << err << "\n";
-      }
-      return 1;
-    }
+    if (!verifyCanonicalOrReport(*irModule, std::cerr)) return 1;
 
     if (opts.dumpIr) {
       toyc::dumpIR(*irModule, std::cerr);
@@ -194,25 +265,16 @@ int main(int argc, char* argv[]) {
     }
 
     if (opts.dumpSsa) {
-      try {
-        toyc::Mem2RegPass mem2reg;
-        for (const auto& func : irModule->functions()) {
-          (void)mem2reg.run(*func);
-        }
-      } catch (const std::exception& ex) {
-        std::cerr << "SSA construction error: " << ex.what() << "\n";
-        return 1;
-      }
-      toyc::rebuildCFG(*irModule);
-      auto ssaVerify = toyc::verifySSAModule(*irModule);
-      if (!ssaVerify.ok) {
-        for (const auto& err : ssaVerify.errors) {
-          std::cerr << "SSA verification error: " << err << "\n";
-        }
-        return 1;
-      }
+      if (!buildSSA(*irModule, std::cerr)) return 1;
+      if (opts.optimize && !optimizeSSA(*irModule, std::cerr)) return 1;
       toyc::dumpIR(*irModule, std::cerr);
       return 0;
+    }
+
+    if (opts.optimize) {
+      if (!buildSSA(*irModule, std::cerr)) return 1;
+      if (!optimizeSSA(*irModule, std::cerr)) return 1;
+      if (!lowerOutOfSSA(*irModule, std::cerr)) return 1;
     }
 
     toyc::RV32InstructionSelector selector(diag);
@@ -293,6 +355,12 @@ int main(int argc, char* argv[]) {
         std::cerr << "IR verification error: " << err << "\n";
       }
       return 1;
+    }
+
+    if (opts.optimize) {
+      if (!buildSSA(*irModule, std::cerr)) return 1;
+      if (!optimizeSSA(*irModule, std::cerr)) return 1;
+      if (!lowerOutOfSSA(*irModule, std::cerr)) return 1;
     }
 
     toyc::RV32InstructionSelector selector(diag);

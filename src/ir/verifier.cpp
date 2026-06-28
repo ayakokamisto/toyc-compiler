@@ -15,6 +15,8 @@
 
 namespace toyc {
 
+VerificationResult verifySSAFunction(const Function& func, const Module& module);
+
 static bool isValueDefined(const Function& func, ValueId vid) {
   for (const auto& v : func.values()) {
     if (v.id == vid) return true;
@@ -68,7 +70,13 @@ VerificationResult verifyModule(const Module& module, VerificationMode mode) {
   }
 
   for (const auto& func : module.functions()) {
-    auto funcResult = verifyFunction(*func, module, mode);
+    VerificationMode funcMode = mode;
+    if (funcMode == VerificationMode::Auto) {
+      funcMode = func->form() == IRForm::SSA ? VerificationMode::SSA : VerificationMode::CanonicalSlot;
+    }
+    auto funcResult = funcMode == VerificationMode::SSA
+                          ? verifySSAFunction(*func, module)
+                          : verifyFunction(*func, module, VerificationMode::CanonicalSlot);
     for (auto& err : funcResult.errors) {
       result.addError(std::move(err));
     }

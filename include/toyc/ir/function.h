@@ -49,7 +49,9 @@ public:
 
   /// Basic blocks.
   [[nodiscard]] const std::vector<std::unique_ptr<BasicBlock>>& blocks() const { return blocks_; }
+  [[nodiscard]] std::vector<std::unique_ptr<BasicBlock>>& mutableBlocks() { return blocks_; }
   BasicBlock* createBlock(std::string label = "");
+  bool eraseBlock(BlockId block);
 
   /// Entry block (first block created).
   [[nodiscard]] BasicBlock* entryBlock() const;
@@ -70,6 +72,7 @@ public:
 
   /// Values.
   [[nodiscard]] const std::vector<Value>& values() const { return values_; }
+  void eraseValues(const std::vector<ValueId>& values);
   ValueId createArgumentValue();
   ValueId createInstValue();
 

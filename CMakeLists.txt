@@ -88,7 +88,13 @@ target_link_libraries(toyc_lowering PUBLIC
 # passes → analysis
 toyc_add_library(toyc_passes
   src/passes/scaffold.cpp
+  src/passes/ir_utils.cpp
   src/passes/mem2reg.cpp
+  src/passes/inst_combine.cpp
+  src/passes/sccp.cpp
+  src/passes/simplify_cfg.cpp
+  src/passes/dce.cpp
+  src/passes/out_of_ssa.cpp
 )
 target_link_libraries(toyc_passes PUBLIC toyc_analysis)
 
@@ -196,6 +202,7 @@ if(TOYC_BUILD_TESTS)
     tests/passes/mem2reg_test.cpp
     tests/passes/ssa_verifier_test.cpp
     tests/passes/driver_dump_ssa_test.cpp
+    tests/passes/p7a_optimization_test.cpp
   )
   target_link_libraries(toyc-ssa-tests PRIVATE
     GTest::gtest_main

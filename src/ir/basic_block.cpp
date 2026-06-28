@@ -27,6 +27,10 @@ void BasicBlock::setTerminator(Terminator term) {
   term_ = std::move(term);
 }
 
+void BasicBlock::clearTerminator() {
+  term_.reset();
+}
+
 void BasicBlock::clearEdges() {
   succs_.clear();
   preds_.clear();
