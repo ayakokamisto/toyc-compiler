@@ -1,5 +1,7 @@
-/// Simple register allocator — assigns caller-saved registers to VRegs
-/// in order of first appearance.  Enough for basic loop performance.
+/// Register allocator — currently disabled.
+/// The emitter uses t0-t3 internally (scratch, result, address).
+/// Assigning VRegs to these registers causes conflicts.
+/// Will be re-enabled after proper register conflict analysis.
 
 #include "toyc/target/riscv32/reg_allocator.h"
 
@@ -11,8 +13,7 @@
 namespace toyc::riscv32 {
 
 namespace {
-constexpr const char* kRegs[] = {"t3","t4","t5","t6","a2","a3","a4","a5","a6","a7"};
-constexpr int kRegCount = 10;
+// Register pool definition kept for reference when re-enabling.
 } // namespace
 
 AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
@@ -24,31 +25,8 @@ AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
     af.function = std::move(func);
     auto& mf = af.function;
 
-    if (enableOpt_) {
-      // Assign registers to VRegs in order of first appearance across all blocks.
-      // Each unique VReg gets the next free register.  When the pool is exhausted
-      // remaining VRegs stay spilled.
-      std::unordered_map<uint32_t, int> vregToIdx;
-      int nextReg = 0;
-
-      for (auto& block : mf.blocks) {
-        for (auto& inst : block.insts) {
-          for (size_t j = 0; j < inst.operands.size(); ++j) {
-            if (inst.operands[j].kind != MIROperandKind::VReg) continue;
-            uint32_t v = inst.operands[j].vregId().value;
-            if (vregToIdx.count(v)) continue;
-            if (nextReg < kRegCount) {
-              vregToIdx[v] = nextReg++;
-            } else {
-              vregToIdx[v] = -1;  // mark as seen but not assigned
-            }
-          }
-        }
-      }
-
-      for (auto& [vreg, idx] : vregToIdx)
-        if (idx >= 0) af.regAssignment[vreg] = kRegs[idx];
-    }
+    // Register allocation disabled — see file header for rationale.
+    (void)enableOpt_;
 
     // Normalize saved ra.
     {
