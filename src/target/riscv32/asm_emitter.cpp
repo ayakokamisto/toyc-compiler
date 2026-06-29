@@ -521,6 +521,25 @@ private:
   FrameLayout layout_;
   std::unordered_map<uint32_t, int32_t> vregOffsets_;
   VRegCache cache_;
+  // Frame-slot forwarding: offset(sp) → register that holds the slot's value.
+  // Eliminates StoreFrame/LoadFrame stack round-trips within a block.
+  std::unordered_map<int32_t, std::string> slotReg_;
+  std::unordered_map<std::string, int32_t> regToSlot_;
+
+  void clobberReg(const std::string& reg) {
+    cache_.invalidate(reg);
+    auto it = regToSlot_.find(reg);
+    if (it != regToSlot_.end()) {
+      slotReg_.erase(it->second);
+      regToSlot_.erase(it);
+    }
+  }
+
+  void clearRegCaches() {
+    cache_.clear();
+    slotReg_.clear();
+    regToSlot_.clear();
+  }
 
   std::string labelForGlobal(GlobalId id) const {
     for (const auto& global : module_.globals) {
@@ -562,7 +581,7 @@ private:
 
     for (const auto& block : func.blocks) {
       out_ << block.label << ":\n";
-      cache_.clear();
+      clearRegCaches();
       for (const auto& inst : block.insts) {
         emitInstruction(inst);
       }
@@ -593,7 +612,7 @@ private:
       return;
     }
     out_ << "  li t3, " << amount << "\n";
-    cache_.invalidate("t3");
+    clobberReg("t3");
     out_ << "  add sp, sp, t3\n";
   }
 
@@ -603,7 +622,7 @@ private:
       return;
     }
     out_ << "  li t3, " << offset << "\n";
-    cache_.invalidate("t3");
+    clobberReg("t3");
     out_ << "  add t3, sp, t3\n";
     out_ << "  lw " << reg << ", 0(t3)\n";
   }
@@ -614,7 +633,7 @@ private:
       return;
     }
     out_ << "  li t3, " << offset << "\n";
-    cache_.invalidate("t3");
+    clobberReg("t3");
     out_ << "  add t3, sp, t3\n";
     out_ << "  sw " << reg << ", 0(t3)\n";
   }
@@ -632,7 +651,7 @@ private:
         return std::string(physRegName(operand.physReg()));
       case MIROperandKind::Immediate:
         out_ << "  li " << scratch << ", " << operand.imm() << "\n";
-        cache_.invalidate(scratch);
+        clobberReg(scratch);
         return scratch;
       default:
         return scratch;
@@ -648,7 +667,7 @@ private:
     if (dst.kind == MIROperandKind::PhysReg) {
       const auto name = std::string(physRegName(dst.physReg()));
       if (name != reg) out_ << "  mv " << name << ", " << reg << "\n";
-      cache_.invalidate(name);
+      clobberReg(name);
     }
   }
 
@@ -676,7 +695,7 @@ private:
         break;
       case MIROpcode::LoadImm:
       case MIROpcode::Li:
-        cache_.invalidate("t2");
+        clobberReg("t2");
         out_ << "  li t2, " << inst.operands[1].imm() << "\n";
         storeDestination(inst.operands[0], "t2");
         break;
@@ -687,28 +706,47 @@ private:
       }
       case MIROpcode::LoadFrame: {
         const auto* object = frameObject(inst.operands[1].frameSlotIndex());
-        cache_.invalidate("t2");
-        loadReg("t2", object ? object->offset : 0);
-        storeDestination(inst.operands[0], "t2");
+        int32_t offset = object ? object->offset : 0;
+        auto sit = slotReg_.find(offset);
+        if (sit != slotReg_.end()) {
+          // Value already in a register — forward it
+          clobberReg("t2");
+          if (sit->second != "t2") out_ << "  mv t2, " << sit->second << "\n";
+          storeDestination(inst.operands[0], "t2");
+        } else {
+          clobberReg("t2");
+          loadReg("t2", offset);
+          storeDestination(inst.operands[0], "t2");
+        }
         break;
       }
       case MIROpcode::StoreFrame: {
         const auto* object = frameObject(inst.operands[0].frameSlotIndex());
         std::string src = loadOperand(inst.operands[1], "t0");
-        storeReg(src, object ? object->offset : 0);
+        int32_t offset = object ? object->offset : 0;
+        storeReg(src, offset);
+        // Track: this frame slot's value is now in src register
+        if (object) {
+          auto rit = regToSlot_.find(src);
+          if (rit != regToSlot_.end()) slotReg_.erase(rit->second);
+          auto sit = slotReg_.find(offset);
+          if (sit != slotReg_.end()) regToSlot_.erase(sit->second);
+          slotReg_[offset] = src;
+          regToSlot_[src] = offset;
+        }
         break;
       }
       case MIROpcode::LoadGlobal:
         out_ << "  la t3, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
-        cache_.invalidate("t3");
+        clobberReg("t3");
         out_ << "  lw t2, 0(t3)\n";
-        cache_.invalidate("t2");
+        clobberReg("t2");
         storeDestination(inst.operands[0], "t2");
         break;
       case MIROpcode::StoreGlobal: {
         std::string src = loadOperand(inst.operands[1], "t0");
         out_ << "  la t3, " << labelForGlobal(inst.operands[0].globalId()) << "\n";
-        cache_.invalidate("t3");
+        clobberReg("t3");
         out_ << "  sw " << src << ", 0(t3)\n";
         break;
       }
@@ -731,7 +769,7 @@ private:
         break;
       case MIROpcode::Call:
         out_ << "  call " << inst.comment << "\n";
-        cache_.clear();
+        clearRegCaches();
         break;
       case MIROpcode::Return:
         emitReturn();
@@ -744,7 +782,7 @@ private:
         out_ << "  bnez t0, " << blockLabel(*func_, inst.operands[1].blockLabel()) << "\n";
         break;
       case MIROpcode::La:
-        cache_.invalidate("t2");
+        clobberReg("t2");
         out_ << "  la t2, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
         storeDestination(inst.operands[0], "t2");
         break;
@@ -754,7 +792,7 @@ private:
   void emitBinary(const MIRInstruction& inst) {
     std::string lhs = loadOperand(inst.operands[1], "t0");
     std::string rhs = loadOperand(inst.operands[2], "t1");
-    cache_.invalidate("t2");
+    clobberReg("t2");
     out_ << "  " << mirOpcodeName(inst.opcode) << " t2, " << lhs << ", " << rhs << "\n";
     storeDestination(inst.operands[0], "t2");
   }
@@ -763,14 +801,14 @@ private:
     std::string lhs = loadOperand(inst.operands[1], "t0");
     int32_t imm = inst.operands[2].imm();
     if (fitsI12(imm)) {
-      cache_.invalidate("t2");
+      clobberReg("t2");
       out_ << "  " << mirOpcodeName(inst.opcode) << " t2, " << lhs << ", " << imm << "\n";
     } else {
       out_ << "  li t1, " << imm << "\n";
-      cache_.invalidate("t1");
+      clobberReg("t1");
       const char* op = inst.opcode == MIROpcode::Addi ? "add" :
                        inst.opcode == MIROpcode::Xori ? "xor" : "sltu";
-      cache_.invalidate("t2");
+      clobberReg("t2");
       out_ << "  " << op << " t2, " << lhs << ", t1\n";
     }
     storeDestination(inst.operands[0], "t2");
