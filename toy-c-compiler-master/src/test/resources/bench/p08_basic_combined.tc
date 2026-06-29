@@ -1,0 +1,18 @@
+int inc3(int x) {
+    return x + 3;
+}
+
+int main() {
+    int i = 0;
+    int s = 0;
+    while (i < 5000000) {
+        int x = i % 97;
+        if ((x < 13 || x > 81) && x != 42) {
+            s = (s + inc3(x) + x * 2 - x) % 256;
+        } else {
+            s = (s + inc3(7) - 2) % 256;
+        }
+        i = i + 1;
+    }
+    return s;
+}

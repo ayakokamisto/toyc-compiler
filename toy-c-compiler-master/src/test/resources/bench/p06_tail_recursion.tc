@@ -1,0 +1,10 @@
+int tail_sum(int n, int acc) {
+    if (n == 0) {
+        return acc;
+    }
+    return tail_sum(n - 1, (acc + n % 251) % 256);
+}
+
+int main() {
+    return tail_sum(60000, 0);
+}

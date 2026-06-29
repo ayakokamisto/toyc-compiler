@@ -1,0 +1,18 @@
+int g = 5;
+
+int add(int a, int b) {
+    return a + b + g;
+}
+
+int main() {
+    int i = 0;
+    int sum = 0;
+    while (i < 5) {
+        i = i + 1;
+        if (i == 3) {
+            continue;
+        }
+        sum = sum + add(i, 1);
+    }
+    return sum;
+}

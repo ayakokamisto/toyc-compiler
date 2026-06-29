@@ -1,0 +1,14 @@
+int main() {
+    int a = 3;
+    int b = 4;
+    int c = 0;
+    if (a < b && b >= 4) {
+        c = c + 5;
+    }
+    if (a == b || a != 3) {
+        c = c + 100;
+    } else {
+        c = c + 7;
+    }
+    return c;
+}

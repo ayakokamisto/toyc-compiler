@@ -444,6 +444,7 @@ private:
   const MIRFunction* func_ = nullptr;
   FrameLayout layout_;
   std::unordered_map<uint32_t, int32_t> vregOffsets_;
+  const std::unordered_map<uint32_t, std::string>* regAssignment_ = nullptr;
 
   // ── Block-local VReg cache (t0/t1) ──────────────────────────────────
   // Tracks which VRegs are currently in t0 and t1.  Eliminates
@@ -495,6 +496,7 @@ private:
     const auto& func = allocatedFunction.function;
     func_ = &func;
     layout_ = allocatedFunction.frameLayout;
+    regAssignment_ = &allocatedFunction.regAssignment;
     vregOffsets_.clear();
     for (const auto& object : func.frameObjects) {
       if (object.kind == FrameObjectKind::VRegHome && object.vregId.has_value()) {
@@ -583,8 +585,12 @@ private:
     switch (operand.kind) {
       case MIROperandKind::VReg: {
         uint32_t vreg = operand.vregId().value;
-        // Block-local cache: if this VReg was just stored to t0 or t1,
-        // return that register instead of reloading from stack.
+        // Physical register assignment takes priority over block cache.
+        if (regAssignment_) {
+          auto it = regAssignment_->find(vreg);
+          if (it != regAssignment_->end()) return it->second;
+        }
+        // Block-local cache: t0/t1 may still hold this VReg from a recent store.
         std::string cached = cacheFind(vreg);
         if (!cached.empty()) return cached;
         loadReg(scratch, vregOffset(operand.vregId()));
@@ -604,6 +610,12 @@ private:
   void storeDestination(const MIROperand& dst, const std::string& reg) {
     if (dst.kind == MIROperandKind::VReg) {
       storeReg(reg, vregOffset(dst.vregId()));
+      // If assigned a physical register, also mv into it.
+      if (regAssignment_) {
+        auto it = regAssignment_->find(dst.vregId().value);
+        if (it != regAssignment_->end() && it->second != reg)
+          out_ << "  mv " << it->second << ", " << reg << "\n";
+      }
       // Update block-local cache: this VReg is now in `reg`.
       cacheSetReg(reg, dst.vregId().value);
       return;

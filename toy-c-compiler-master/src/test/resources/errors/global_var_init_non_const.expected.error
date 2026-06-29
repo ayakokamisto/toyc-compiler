@@ -1,0 +1,1 @@
+global variable initializer must be compile-time constant: x

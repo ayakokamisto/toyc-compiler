@@ -1,0 +1,12 @@
+int total = 1;
+
+void addToTotal(int x) {
+    total = total + x;
+    return;
+}
+
+int main() {
+    addToTotal(4);
+    addToTotal(7);
+    return total;
+}

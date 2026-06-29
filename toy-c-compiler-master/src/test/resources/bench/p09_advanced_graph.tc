@@ -1,0 +1,32 @@
+int g01 = 3;
+int g02 = 17;
+int g03 = 25;
+int g12 = 5;
+int g13 = 11;
+int g23 = 7;
+
+int relax(int a, int b, int c) {
+    int via = a + b;
+    if (via < c) {
+        return via;
+    }
+    return c;
+}
+
+int main() {
+    int i = 0;
+    int checksum = 0;
+    while (i < 1300000) {
+        g02 = relax(g01, g12, g02);
+        g03 = relax(g02, g23, g03);
+        g13 = relax(g12, g23, g13);
+        checksum = (checksum + g02 + g03 + g13 + i % 19) % 256;
+        if (i % 257 == 0) {
+            g02 = 17;
+            g03 = 25;
+            g13 = 11;
+        }
+        i = i + 1;
+    }
+    return checksum;
+}
