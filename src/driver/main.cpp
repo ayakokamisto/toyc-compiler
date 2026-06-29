@@ -383,7 +383,7 @@ int main(int argc, char* argv[]) {
 
     toyc::riscv32::SpillAllAllocator allocator;
     auto allocated = allocator.allocate(std::move(*mirModule));
-    std::cout << toyc::riscv32::emitAssembly(allocated);
+    std::cout << toyc::riscv32::emitAssembly(allocated, opts.optimize);
   }
 
   return 0;

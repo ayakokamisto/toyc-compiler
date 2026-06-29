@@ -75,6 +75,14 @@ static int countOpcode(const Function& func, Opcode opcode) {
   return count;
 }
 
+static int countTerminators(const Function& func, Opcode opcode) {
+  int count = 0;
+  for (const auto& block : func.blocks()) {
+    if (block->hasTerminator() && block->terminator()->opcode == opcode) ++count;
+  }
+  return count;
+}
+
 static std::string constantAddChainSource(int terms) {
   std::string source = "int main() { return 0";
   for (int i = 0; i < terms; ++i) source += " + 1";
@@ -200,6 +208,26 @@ TEST(P7BCompileTimeTest, LongChainWithCallKeepsSideEffect) {
   const auto* main = mainFunc(module);
   ASSERT_NE(main, nullptr);
   EXPECT_EQ(countOpcode(*main, Opcode::Call), 1);
+}
+
+TEST(P7BCompileTimeTest, LoopPhiKeepsExitConditionDynamic) {
+  auto module = lowerToOptimizedSSA(R"(
+int input(int x) { return x; }
+int main() {
+  int n = input(10);
+  int i = 0;
+  int x = 0;
+  while (i < n) {
+    x = x + i;
+    i = i + 1;
+  }
+  return x;
+}
+)");
+  const auto* main = mainFunc(module);
+  ASSERT_NE(main, nullptr);
+  EXPECT_GT(countOpcode(*main, Opcode::Phi), 0);
+  EXPECT_GT(countTerminators(*main, Opcode::CondBr), 0);
 }
 
 TEST(P7AOptimizationTest, OutOfSSALowersPhiAndP5AcceptsResult) {

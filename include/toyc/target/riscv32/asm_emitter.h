@@ -13,7 +13,7 @@ struct AllocatedMachineModule;
 
 /// Emit RISC-V32 assembly for the given MIR module.
 /// Returns the assembly text as a string.
-std::string emitAssembly(const AllocatedMachineModule& module);
+std::string emitAssembly(const AllocatedMachineModule& module, bool optimize = false);
 
 } // namespace riscv32
 } // namespace toyc

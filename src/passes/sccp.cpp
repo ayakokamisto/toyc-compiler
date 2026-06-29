@@ -82,6 +82,23 @@ static LatticeValue evalInst(const Inst& inst, const std::unordered_map<ValueId,
   }
 }
 
+static LatticeValue evalPhi(const Inst& inst, const std::unordered_map<ValueId, int32_t>& literalConstants) {
+  if (inst.phiIncoming.empty()) return {};
+
+  std::optional<int32_t> constant;
+  for (const auto& edge : inst.phiIncoming) {
+    auto it = literalConstants.find(edge.value);
+    if (it == literalConstants.end()) return {LatticeKind::Overdefined, 0};
+    if (!constant.has_value()) {
+      constant = it->second;
+    } else if (*constant != it->second) {
+      return {LatticeKind::Overdefined, 0};
+    }
+  }
+
+  return {LatticeKind::Constant, *constant};
+}
+
 static void turnIntoConst(Inst& inst, int32_t value) {
   inst.opcode = Opcode::ConstInt;
   inst.constValue = value;
@@ -96,8 +113,16 @@ PassResult SCCPPass::run(Function& function) {
   rebuildCFG(function);
 
   std::unordered_map<ValueId, LatticeValue> values;
+  std::unordered_map<ValueId, int32_t> literalConstants;
   for (const auto& param : function.params()) {
     values[param.valueId] = {LatticeKind::Overdefined, 0};
+  }
+  for (const auto& block : function.blocks()) {
+    for (const auto& inst : block->instructions()) {
+      if (inst->opcode == Opcode::ConstInt && inst->result.has_value()) {
+        literalConstants[*inst->result] = inst->constValue;
+      }
+    }
   }
 
   bool changedLattice = true;
@@ -108,9 +133,7 @@ PassResult SCCPPass::run(Function& function) {
         if (!inst->result.has_value()) continue;
         LatticeValue incoming;
         if (inst->opcode == Opcode::Phi) {
-          for (const auto& edge : inst->phiIncoming) {
-            changedLattice |= mergeValue(incoming, getValue(values, edge.value));
-          }
+          incoming = evalPhi(*inst, literalConstants);
         } else {
           incoming = evalInst(*inst, values);
         }

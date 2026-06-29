@@ -4,9 +4,12 @@
 #include "toyc/target/riscv32/spill_all_allocator.h"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace toyc::riscv32 {
 
@@ -69,6 +72,274 @@ std::string blockLabel(const MIRFunction& func, BlockId id) {
 
 bool fitsI12(int32_t value) {
   return value >= -2048 && value <= 2047;
+}
+
+std::string trim(std::string_view text) {
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+    text.remove_prefix(1);
+  }
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+    text.remove_suffix(1);
+  }
+  return std::string(text);
+}
+
+std::string stripComment(std::string_view line) {
+  const auto comment = line.find('#');
+  if (comment != std::string_view::npos) line = line.substr(0, comment);
+  return trim(line);
+}
+
+std::vector<std::string> splitLines(std::string_view text) {
+  std::vector<std::string> lines;
+  std::istringstream in{std::string(text)};
+  std::string line;
+  while (std::getline(in, line)) {
+    while (!line.empty() && line.back() == '\r') line.pop_back();
+    lines.push_back(std::move(line));
+  }
+  return lines;
+}
+
+std::string joinLines(const std::vector<std::string>& lines) {
+  std::ostringstream out;
+  for (const auto& line : lines) out << line << "\n";
+  return out.str();
+}
+
+std::vector<std::string> splitOperands(std::string_view text) {
+  std::vector<std::string> operands;
+  while (!text.empty()) {
+    const auto comma = text.find(',');
+    if (comma == std::string_view::npos) {
+      operands.push_back(trim(text));
+      break;
+    }
+    operands.push_back(trim(text.substr(0, comma)));
+    text.remove_prefix(comma + 1);
+  }
+  return operands;
+}
+
+struct ParsedInst {
+  bool instruction = false;
+  std::string opcode;
+  std::vector<std::string> operands;
+};
+
+ParsedInst parseInst(std::string_view line) {
+  ParsedInst parsed;
+  const std::string text = stripComment(line);
+  if (text.empty() || text.back() == ':' || text.front() == '.') return parsed;
+  std::string_view view(text);
+  const auto space = view.find(' ');
+  parsed.opcode = space == std::string_view::npos ? std::string(view)
+                                                   : std::string(view.substr(0, space));
+  if (space != std::string_view::npos) parsed.operands = splitOperands(view.substr(space + 1));
+  parsed.instruction = true;
+  return parsed;
+}
+
+bool isLabelOrDirective(std::string_view line) {
+  const std::string text = stripComment(line);
+  return !text.empty() && (text.back() == ':' || text.front() == '.');
+}
+
+bool isControlFlow(const ParsedInst& inst) {
+  if (!inst.instruction) return false;
+  return inst.opcode == "j" || inst.opcode == "ret" || inst.opcode == "call" ||
+         (!inst.opcode.empty() && inst.opcode.front() == 'b');
+}
+
+std::string definedReg(const ParsedInst& inst) {
+  if (!inst.instruction || inst.operands.empty()) return {};
+  if (inst.opcode == "sw" || inst.opcode == "j" || inst.opcode == "ret" ||
+      inst.opcode == "call" || (!inst.opcode.empty() && inst.opcode.front() == 'b')) {
+    return {};
+  }
+  return inst.operands.front();
+}
+
+bool isRedundantMove(const ParsedInst& inst) {
+  return inst.opcode == "mv" && inst.operands.size() == 2 && inst.operands[0] == inst.operands[1];
+}
+
+bool parseJumpTarget(const ParsedInst& inst, std::string& target) {
+  if (inst.opcode != "j" || inst.operands.size() != 1) return false;
+  target = inst.operands[0];
+  return !target.empty();
+}
+
+bool isLabelLine(std::string_view line, std::string_view label) {
+  const std::string text = stripComment(line);
+  return text.size() == label.size() + 1 && text.back() == ':' &&
+         std::string_view(text).substr(0, text.size() - 1) == label;
+}
+
+std::string formatInst(const std::string& opcode, const std::vector<std::string>& operands) {
+  std::ostringstream out;
+  out << "  " << opcode;
+  if (!operands.empty()) {
+    out << " ";
+    for (size_t i = 0; i < operands.size(); ++i) {
+      if (i != 0) out << ", ";
+      out << operands[i];
+    }
+  }
+  return out.str();
+}
+
+std::string stackForward(std::string assembly) {
+  auto lines = splitLines(assembly);
+  std::vector<std::string> out;
+  out.reserve(lines.size());
+  std::unordered_map<std::string, std::string> stackSlots;
+
+  for (const auto& line : lines) {
+    auto inst = parseInst(line);
+    if (!inst.instruction || isControlFlow(inst) || isLabelOrDirective(line)) {
+      stackSlots.clear();
+      out.push_back(line);
+      continue;
+    }
+
+    const auto def = definedReg(inst);
+    if (!def.empty()) {
+      for (auto it = stackSlots.begin(); it != stackSlots.end();) {
+        if (it->second == def) {
+          it = stackSlots.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+
+    if (inst.opcode == "lw" && inst.operands.size() == 2) {
+      auto slot = stackSlots.find(inst.operands[1]);
+      if (slot != stackSlots.end()) {
+        if (inst.operands[0] != slot->second) {
+          out.push_back(formatInst("mv", {inst.operands[0], slot->second}));
+        }
+        continue;
+      }
+    }
+
+    out.push_back(line);
+    if (inst.opcode == "sw" && inst.operands.size() == 2) {
+      stackSlots[inst.operands[1]] = inst.operands[0];
+    }
+  }
+  return joinLines(out);
+}
+
+std::vector<std::string> eliminateDeadStackStores(const std::vector<std::string>& lines) {
+  std::vector<std::string> out = lines;
+  std::unordered_set<std::string> liveSlots;
+  bool knownLiveness = false;
+
+  for (size_t i = out.size(); i > 0; --i) {
+    auto& line = out[i - 1];
+    auto inst = parseInst(line);
+    if (!inst.instruction || isLabelOrDirective(line)) {
+      liveSlots.clear();
+      knownLiveness = false;
+      continue;
+    }
+    if (inst.opcode == "ret") {
+      liveSlots.clear();
+      knownLiveness = true;
+      continue;
+    }
+    if (isControlFlow(inst)) {
+      liveSlots.clear();
+      knownLiveness = false;
+      continue;
+    }
+    if (inst.opcode == "lw" && inst.operands.size() == 2 && knownLiveness) {
+      liveSlots.insert(inst.operands[1]);
+      continue;
+    }
+    if (inst.opcode == "sw" && inst.operands.size() == 2 && knownLiveness) {
+      if (!liveSlots.contains(inst.operands[1])) {
+        line.clear();
+      } else {
+        liveSlots.erase(inst.operands[1]);
+      }
+    }
+  }
+
+  out.erase(std::remove(out.begin(), out.end(), ""), out.end());
+  return out;
+}
+
+bool tryFoldZeroStore(const ParsedInst& first, const ParsedInst& second, std::string& folded) {
+  if (first.opcode != "li" || first.operands.size() != 2 || first.operands[1] != "0") return false;
+  if (second.opcode != "sw" || second.operands.size() != 2 || second.operands[0] != first.operands[0]) {
+    return false;
+  }
+  folded = formatInst("sw", {"zero", second.operands[1]});
+  return true;
+}
+
+bool isAluForMoveMerge(const ParsedInst& inst) {
+  if (inst.operands.size() != 3) return false;
+  static const std::unordered_set<std::string> ops = {
+      "add", "addi", "sub", "xor", "xori", "or", "and", "sll", "srl", "sra", "slt", "sltu", "sltiu"};
+  return ops.contains(inst.opcode);
+}
+
+bool tryMergeAluMove(const ParsedInst& first, const ParsedInst& second, std::string& merged) {
+  if (!isAluForMoveMerge(first)) return false;
+  if (second.opcode != "mv" || second.operands.size() != 2) return false;
+  if (second.operands[1] != first.operands[0]) return false;
+  auto operands = first.operands;
+  operands[0] = second.operands[0];
+  merged = formatInst(first.opcode, operands);
+  return true;
+}
+
+bool tryCollapseMoveChain(const ParsedInst& first, const ParsedInst& second, std::string& collapsed) {
+  if (first.opcode != "mv" || second.opcode != "mv") return false;
+  if (first.operands.size() != 2 || second.operands.size() != 2) return false;
+  if (second.operands[1] != first.operands[0]) return false;
+  collapsed = formatInst("mv", {second.operands[0], first.operands[1]});
+  return true;
+}
+
+std::string peephole(std::string assembly) {
+  assembly = stackForward(std::move(assembly));
+  auto input = eliminateDeadStackStores(splitLines(assembly));
+  std::vector<std::string> pass;
+  pass.reserve(input.size());
+
+  for (size_t i = 0; i < input.size(); ++i) {
+    auto inst = parseInst(input[i]);
+    if (i + 1 < input.size()) {
+      auto next = parseInst(input[i + 1]);
+      std::string replacement;
+      if (tryFoldZeroStore(inst, next, replacement) ||
+          tryMergeAluMove(inst, next, replacement) ||
+          tryCollapseMoveChain(inst, next, replacement)) {
+        pass.push_back(std::move(replacement));
+        ++i;
+        continue;
+      }
+    }
+
+    if (isRedundantMove(inst)) continue;
+
+    std::string jumpTarget;
+    if (parseJumpTarget(inst, jumpTarget)) {
+      size_t next = i + 1;
+      while (next < input.size() && stripComment(input[next]).empty()) ++next;
+      if (next < input.size() && isLabelLine(input[next], jumpTarget)) continue;
+    }
+
+    pass.push_back(input[i]);
+  }
+
+  pass = eliminateDeadStackStores(pass);
+  return joinLines(pass);
 }
 
 class Emitter {
@@ -443,8 +714,10 @@ private:
 
 } // namespace
 
-std::string emitAssembly(const AllocatedMachineModule& module) {
-  return Emitter(module).emit();
+std::string emitAssembly(const AllocatedMachineModule& module, bool optimize) {
+  auto assembly = Emitter(module).emit();
+  if (optimize) assembly = peephole(std::move(assembly));
+  return assembly;
 }
 
 } // namespace toyc::riscv32
