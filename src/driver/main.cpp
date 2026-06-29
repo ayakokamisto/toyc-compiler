@@ -29,7 +29,6 @@
 #include "toyc/support/diagnostics.h"
 #include "toyc/target/riscv32/asm_emitter.h"
 #include "toyc/target/riscv32/instruction_selector.h"
-#include "toyc/target/riscv32/reg_allocator.h"
 #include "toyc/target/riscv32/spill_all_allocator.h"
 
 #include <iostream>
@@ -411,7 +410,7 @@ int main(int argc, char* argv[]) {
       (void)toyc::cleanupDeadVRegs(func);
     }
 
-    toyc::riscv32::RegisterAllocator allocator(opts.optimize);
+    toyc::riscv32::SpillAllAllocator allocator;
     auto allocated = allocator.allocate(std::move(*mirModule));
     std::cout << toyc::riscv32::emitAssembly(allocated, opts.optimize);
   }
