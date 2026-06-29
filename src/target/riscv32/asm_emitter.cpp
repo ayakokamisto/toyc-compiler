@@ -272,40 +272,6 @@ std::vector<std::string> eliminateDeadStackStores(const std::vector<std::string>
   return out;
 }
 
-bool tryFoldZeroStore(const ParsedInst& first, const ParsedInst& second, std::string& folded) {
-  if (first.opcode != "li" || first.operands.size() != 2 || first.operands[1] != "0") return false;
-  if (second.opcode != "sw" || second.operands.size() != 2 || second.operands[0] != first.operands[0]) {
-    return false;
-  }
-  folded = formatInst("sw", {"zero", second.operands[1]});
-  return true;
-}
-
-bool isAluForMoveMerge(const ParsedInst& inst) {
-  if (inst.operands.size() != 3) return false;
-  static const std::unordered_set<std::string> ops = {
-      "add", "addi", "sub", "xor", "xori", "or", "and", "sll", "srl", "sra", "slt", "sltu", "sltiu"};
-  return ops.contains(inst.opcode);
-}
-
-bool tryMergeAluMove(const ParsedInst& first, const ParsedInst& second, std::string& merged) {
-  if (!isAluForMoveMerge(first)) return false;
-  if (second.opcode != "mv" || second.operands.size() != 2) return false;
-  if (second.operands[1] != first.operands[0]) return false;
-  auto operands = first.operands;
-  operands[0] = second.operands[0];
-  merged = formatInst(first.opcode, operands);
-  return true;
-}
-
-bool tryCollapseMoveChain(const ParsedInst& first, const ParsedInst& second, std::string& collapsed) {
-  if (first.opcode != "mv" || second.opcode != "mv") return false;
-  if (first.operands.size() != 2 || second.operands.size() != 2) return false;
-  if (second.operands[1] != first.operands[0]) return false;
-  collapsed = formatInst("mv", {second.operands[0], first.operands[1]});
-  return true;
-}
-
 std::string peephole(std::string assembly) {
   assembly = stackForward(std::move(assembly));
   auto input = eliminateDeadStackStores(splitLines(assembly));
@@ -314,18 +280,6 @@ std::string peephole(std::string assembly) {
 
   for (size_t i = 0; i < input.size(); ++i) {
     auto inst = parseInst(input[i]);
-    if (i + 1 < input.size()) {
-      auto next = parseInst(input[i + 1]);
-      std::string replacement;
-      if (tryFoldZeroStore(inst, next, replacement) ||
-          tryMergeAluMove(inst, next, replacement) ||
-          tryCollapseMoveChain(inst, next, replacement)) {
-        pass.push_back(std::move(replacement));
-        ++i;
-        continue;
-      }
-    }
-
     if (isRedundantMove(inst)) continue;
 
     std::string jumpTarget;

@@ -4,6 +4,7 @@
 #include "toyc/passes/ir_utils.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace toyc {
 
@@ -12,6 +13,26 @@ static bool hasPhi(const BasicBlock& block) {
     if (inst->opcode == Opcode::Phi) return true;
   }
   return false;
+}
+
+static bool prunePhiIncomingToCFG(Function& function) {
+  rebuildCFG(function);
+  bool changed = false;
+  for (auto& block : function.blocks()) {
+    const auto preds = block->predecessors();
+    for (auto& inst : block->mutableInstructions()) {
+      if (inst->opcode != Opcode::Phi) continue;
+      const auto oldSize = inst->phiIncoming.size();
+      inst->phiIncoming.erase(std::remove_if(inst->phiIncoming.begin(), inst->phiIncoming.end(),
+                                             [&](const PhiIncoming& incoming) {
+                                               return std::find(preds.begin(), preds.end(),
+                                                                incoming.predecessor) == preds.end();
+                                             }),
+                              inst->phiIncoming.end());
+      changed = changed || inst->phiIncoming.size() != oldSize;
+    }
+  }
+  return changed;
 }
 
 static bool simplifyBranches(Function& function) {
@@ -35,7 +56,10 @@ static bool simplifyBranches(Function& function) {
     block->setTerminator(br);
     changed = true;
   }
-  if (changed) rebuildCFG(function);
+  if (changed) {
+    rebuildCFG(function);
+    changed |= prunePhiIncomingToCFG(function);
+  }
   return changed;
 }
 
@@ -61,6 +85,7 @@ static bool removeTrampolines(Function& function) {
   }
   if (changed) {
     rebuildCFG(function);
+    changed |= prunePhiIncomingToCFG(function);
     changed |= removeUnreachableBlocks(function);
   }
   return changed;
@@ -87,6 +112,7 @@ static bool mergeLinearBlocks(Function& function) {
     if (succ->hasTerminator()) block.setTerminator(*succ->terminator());
     function.eraseBlock(succ->id());
     rebuildCFG(function);
+    (void)prunePhiIncomingToCFG(function);
     return true;
   }
   return false;
@@ -97,6 +123,7 @@ PassResult SimplifyCFGPass::run(Function& function) {
   bool changed = false;
   changed |= removeUnreachableBlocks(function);
   changed |= simplifyBranches(function);
+  changed |= prunePhiIncomingToCFG(function);
   changed |= removeUnreachableBlocks(function);
   changed |= removeTrampolines(function);
   while (mergeLinearBlocks(function)) changed = true;

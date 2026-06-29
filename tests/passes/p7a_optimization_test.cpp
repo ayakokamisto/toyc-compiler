@@ -230,6 +230,43 @@ int main() {
   EXPECT_GT(countTerminators(*main, Opcode::CondBr), 0);
 }
 
+TEST(P7AOptimizationTest, SimplifyCFGPrunesPhiIncomingAfterEdgeRemoval) {
+  Module module;
+  auto* func = module.createFunction("f", I32Type);
+  IRBuilder b;
+  b.setFunction(func);
+  auto entry = b.createBlock("entry");
+  auto header = b.createBlock("while.header");
+  auto latch = b.createBlock("while.latch");
+  auto exit = b.createBlock("while.exit");
+
+  b.setInsertBlock(entry);
+  auto zero = b.emitConstInt(0);
+  b.emitBranch(header);
+
+  auto* phi = b.createPhi(header, I32Type);
+  b.addPhiIncoming(*phi, entry, zero);
+  b.setInsertBlock(header);
+  b.emitBranch(latch);
+
+  b.setInsertBlock(latch);
+  auto one = b.emitConstInt(1);
+  auto stop = b.emitConstInt(0);
+  b.addPhiIncoming(*phi, latch, one);
+  b.emitCondBranch(stop, header, exit);
+
+  b.setInsertBlock(exit);
+  b.emitReturn(*phi->result);
+  rebuildCFG(*func);
+  func->setForm(IRForm::SSA);
+  ASSERT_TRUE(verifySSAModule(module).ok);
+
+  SimplifyCFGPass pass;
+  EXPECT_TRUE(pass.run(*func).changed);
+  rebuildCFG(*func);
+  EXPECT_TRUE(verifySSAModule(module).ok);
+}
+
 TEST(P7AOptimizationTest, OutOfSSALowersPhiAndP5AcceptsResult) {
   Module module;
   auto* func = module.createFunction("f", I32Type);
