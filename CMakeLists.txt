@@ -101,6 +101,7 @@ target_link_libraries(toyc_passes PUBLIC toyc_analysis)
 # mir → support
 toyc_add_library(toyc_mir
   src/mir/mir.cpp
+  src/mir/mir_slot_forwarding.cpp
 )
 target_link_libraries(toyc_mir PUBLIC toyc_support toyc_ir)
 

@@ -12,6 +12,7 @@
 #include "toyc/ir/verifier.h"
 #include "toyc/lowering/ast_to_ir.h"
 #include "toyc/mir/mir.h"
+#include "toyc/mir/mir_slot_forwarding.h"
 #include "toyc/mir/verifier.h"
 #include "toyc/passes/dce.h"
 #include "toyc/passes/inst_combine.h"
@@ -304,6 +305,10 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
+    for (auto& func : mirModule->functions) {
+      (void)toyc::forwardMIRSlots(func);
+    }
+
     toyc::dumpMIR(*mirModule, std::cerr);
     return 0;
   }
@@ -388,6 +393,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "MIR verification error: " << err << "\n";
       }
       return 1;
+    }
+
+    // L1: block-local StoreFrame→LoadFrame forwarding.
+    for (auto& func : mirModule->functions) {
+      (void)toyc::forwardMIRSlots(func);
     }
 
     toyc::riscv32::SpillAllAllocator allocator;
