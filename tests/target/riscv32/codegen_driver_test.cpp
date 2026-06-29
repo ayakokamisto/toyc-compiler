@@ -76,7 +76,7 @@ int main() {
 )");
   EXPECT_NE(asmText.find("call .Ltoyc.fn."), std::string::npos);
   EXPECT_NE(asmText.find("sw ra"), std::string::npos);
-  EXPECT_NE(asmText.find("add "), std::string::npos);
+  EXPECT_NE(asmText.find("add t2"), std::string::npos);
 }
 
 struct EndToEndCase {
