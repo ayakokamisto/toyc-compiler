@@ -120,6 +120,40 @@ void RV32InstructionSelector::lowerInst(const Inst& inst) {
 
     case Opcode::Binary: {
       VRegId dst = getOrCreateVReg(*inst.result);
+
+      // L4: constant-fold when both operands are known.
+      auto lhsC = valueToConst_.find(inst.lhs.value);
+      auto rhsC = valueToConst_.find(inst.rhs.value);
+      if (lhsC != valueToConst_.end() && rhsC != valueToConst_.end()) {
+        int32_t lhsVal = lhsC->second, rhsVal = rhsC->second;
+        std::optional<int32_t> result;
+        switch (inst.binaryOp) {
+          case BinaryOpcode::Add:
+            result = static_cast<int32_t>(static_cast<int64_t>(lhsVal) + rhsVal);
+            break;
+          case BinaryOpcode::Subtract:
+            result = static_cast<int32_t>(static_cast<int64_t>(lhsVal) - rhsVal);
+            break;
+          case BinaryOpcode::Multiply:
+            result = static_cast<int32_t>(static_cast<int64_t>(lhsVal) * rhsVal);
+            break;
+          case BinaryOpcode::Divide:
+            if (rhsVal != 0 && !(lhsVal == INT32_MIN && rhsVal == -1))
+              result = lhsVal / rhsVal;
+            break;
+          case BinaryOpcode::Modulo:
+            if (rhsVal != 0 && !(lhsVal == INT32_MIN && rhsVal == -1))
+              result = lhsVal % rhsVal;
+            break;
+        }
+        if (result.has_value()) {
+          valueToConst_[inst.result->value] = *result;
+          emit(MIROpcode::LoadImm,
+               {MIROperand::makeVReg(dst), MIROperand::makeImm(*result)});
+          break;
+        }
+      }
+
       VRegId lhs = getOrCreateVReg(inst.lhs);
       VRegId rhs = getOrCreateVReg(inst.rhs);
 
@@ -188,6 +222,27 @@ void RV32InstructionSelector::lowerInst(const Inst& inst) {
 
     case Opcode::Compare: {
       VRegId dst = getOrCreateVReg(*inst.result);
+
+      // L4: constant-fold comparison when both operands are known.
+      auto cmpLhsC = valueToConst_.find(inst.cmpLhs.value);
+      auto cmpRhsC = valueToConst_.find(inst.cmpRhs.value);
+      if (cmpLhsC != valueToConst_.end() && cmpRhsC != valueToConst_.end()) {
+        int32_t l = cmpLhsC->second, r = cmpRhsC->second;
+        int32_t result = 0;
+        switch (inst.cmpPred) {
+          case ComparePredicate::Equal:        result = (l == r) ? 1 : 0; break;
+          case ComparePredicate::NotEqual:     result = (l != r) ? 1 : 0; break;
+          case ComparePredicate::Less:         result = (l < r)  ? 1 : 0; break;
+          case ComparePredicate::LessEqual:    result = (l <= r) ? 1 : 0; break;
+          case ComparePredicate::Greater:      result = (l > r)  ? 1 : 0; break;
+          case ComparePredicate::GreaterEqual: result = (l >= r) ? 1 : 0; break;
+        }
+        valueToConst_[inst.result->value] = result;
+        emit(MIROpcode::LoadImm,
+             {MIROperand::makeVReg(dst), MIROperand::makeImm(result)});
+        break;
+      }
+
       VRegId lhs = getOrCreateVReg(inst.cmpLhs);
       VRegId rhs = getOrCreateVReg(inst.cmpRhs);
 
