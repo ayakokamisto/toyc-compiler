@@ -1,12 +1,19 @@
-/// Register allocator — currently a pass-through to SpillAll behaviour.
-/// The BlockVRegCache (t0/t1 in asm_emitter) provides intra-block forwarding.
-/// Full register allocation is deferred until spike-based testing is available.
+/// Simple register allocator — assigns caller-saved registers to VRegs
+/// in order of first appearance.  Enough for basic loop performance.
 
 #include "toyc/target/riscv32/reg_allocator.h"
 
 #include <algorithm>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace toyc::riscv32 {
+
+namespace {
+constexpr const char* kRegs[] = {"t3","t4","t5","t6","a2","a3","a4","a5","a6","a7"};
+constexpr int kRegCount = 10;
+} // namespace
 
 AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
   AllocatedMachineModule allocated;
@@ -17,9 +24,33 @@ AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
     af.function = std::move(func);
     auto& mf = af.function;
 
-    // No register assignment yet — BlockVRegCache handles t0/t1 intra-block.
+    if (enableOpt_) {
+      // Assign registers to VRegs in order of first appearance across all blocks.
+      // Each unique VReg gets the next free register.  When the pool is exhausted
+      // remaining VRegs stay spilled.
+      std::unordered_map<uint32_t, int> vregToIdx;
+      int nextReg = 0;
 
-    // Normalize saved ra (same as SpillAllAllocator).
+      for (auto& block : mf.blocks) {
+        for (auto& inst : block.insts) {
+          for (size_t j = 0; j < inst.operands.size(); ++j) {
+            if (inst.operands[j].kind != MIROperandKind::VReg) continue;
+            uint32_t v = inst.operands[j].vregId().value;
+            if (vregToIdx.count(v)) continue;
+            if (nextReg < kRegCount) {
+              vregToIdx[v] = nextReg++;
+            } else {
+              vregToIdx[v] = -1;  // mark as seen but not assigned
+            }
+          }
+        }
+      }
+
+      for (auto& [vreg, idx] : vregToIdx)
+        if (idx >= 0) af.regAssignment[vreg] = kRegs[idx];
+    }
+
+    // Normalize saved ra.
     {
       auto isRa = [](const FrameObject& o) {
         return o.kind == FrameObjectKind::SavedReturnAddress;

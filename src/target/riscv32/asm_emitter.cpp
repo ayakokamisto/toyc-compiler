@@ -707,10 +707,11 @@ private:
       case MIROpcode::Branch:
         out_ << "  j " << blockLabel(*func_, inst.operands[0].blockLabel()) << "\n";
         break;
-      case MIROpcode::BranchIfNonZero:
-        loadOperand(inst.operands[0], "t0");
-        out_ << "  bnez t0, " << blockLabel(*func_, inst.operands[1].blockLabel()) << "\n";
+      case MIROpcode::BranchIfNonZero: {
+        std::string cond = loadOperand(inst.operands[0], "t0");
+        out_ << "  bnez " << cond << ", " << blockLabel(*func_, inst.operands[1].blockLabel()) << "\n";
         break;
+      }
       case MIROpcode::La:
         out_ << "  la t2, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
         storeDestination(inst.operands[0], "t2");
