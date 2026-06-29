@@ -6,6 +6,7 @@
 #include "toyc/support/diagnostics.h"
 
 #include <optional>
+#include <unordered_map>
 
 namespace toyc {
 
@@ -30,6 +31,7 @@ private:
 
   // ValueId → VRegId mapping (per-function)
   std::unordered_map<uint32_t, VRegId> valueToVReg_;
+  std::unordered_map<uint32_t, int32_t> valueToConst_;
   // SlotId → FrameObject index mapping (per-function)
   std::unordered_map<uint32_t, int> slotToFrameObj_;
   // BlockId → MIR block index mapping (per-function)

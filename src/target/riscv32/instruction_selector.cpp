@@ -8,6 +8,7 @@
 #include "toyc/ir/opcode.h"
 
 #include <cassert>
+#include <climits>
 #include <sstream>
 
 namespace toyc {
@@ -64,6 +65,7 @@ void RV32InstructionSelector::lowerInst(const Inst& inst) {
   switch (inst.opcode) {
     case Opcode::ConstInt: {
       VRegId dst = getOrCreateVReg(*inst.result);
+      valueToConst_[inst.result->value] = inst.constValue;
       emit(MIROpcode::LoadImm, {MIROperand::makeVReg(dst), MIROperand::makeImm(inst.constValue)});
       break;
     }
@@ -122,12 +124,35 @@ void RV32InstructionSelector::lowerInst(const Inst& inst) {
       VRegId rhs = getOrCreateVReg(inst.rhs);
 
       switch (inst.binaryOp) {
-        case BinaryOpcode::Add:
+        case BinaryOpcode::Add: {
+          auto rhsConst = valueToConst_.find(inst.rhs.value);
+          if (rhsConst != valueToConst_.end() && rhsConst->second >= -2048 && rhsConst->second <= 2047) {
+            emit(MIROpcode::Addi, {MIROperand::makeVReg(dst), MIROperand::makeVReg(lhs),
+                                   MIROperand::makeImm(rhsConst->second)});
+            break;
+          }
+          auto lhsConst = valueToConst_.find(inst.lhs.value);
+          if (lhsConst != valueToConst_.end() && lhsConst->second >= -2048 && lhsConst->second <= 2047) {
+            emit(MIROpcode::Addi, {MIROperand::makeVReg(dst), MIROperand::makeVReg(rhs),
+                                   MIROperand::makeImm(lhsConst->second)});
+            break;
+          }
           emit(MIROpcode::Add, {MIROperand::makeVReg(dst), MIROperand::makeVReg(lhs), MIROperand::makeVReg(rhs)});
           break;
-        case BinaryOpcode::Subtract:
+        }
+        case BinaryOpcode::Subtract: {
+          auto rhsConst = valueToConst_.find(inst.rhs.value);
+          if (rhsConst != valueToConst_.end() && rhsConst->second != INT32_MIN) {
+            int32_t negated = -rhsConst->second;
+            if (negated >= -2048 && negated <= 2047) {
+              emit(MIROpcode::Addi, {MIROperand::makeVReg(dst), MIROperand::makeVReg(lhs),
+                                     MIROperand::makeImm(negated)});
+              break;
+            }
+          }
           emit(MIROpcode::Sub, {MIROperand::makeVReg(dst), MIROperand::makeVReg(lhs), MIROperand::makeVReg(rhs)});
           break;
+        }
         case BinaryOpcode::Multiply:
         case BinaryOpcode::Divide:
         case BinaryOpcode::Modulo: {
@@ -314,6 +339,7 @@ void RV32InstructionSelector::lowerFunction(const Function& func) {
   mirFunc.returnType = func.returnType();
 
   valueToVReg_.clear();
+  valueToConst_.clear();
   slotToFrameObj_.clear();
   blockToIndex_.clear();
 

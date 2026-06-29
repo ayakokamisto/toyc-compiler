@@ -189,6 +189,22 @@ std::string formatInst(const std::string& opcode, const std::vector<std::string>
   return out.str();
 }
 
+bool parseStackSlot(std::string_view operand, std::string& slot) {
+  const std::string text = trim(operand);
+  const auto open = text.find('(');
+  const auto close = text.find(')');
+  if (open == std::string::npos || close != text.size() - 1) return false;
+  if (text.substr(open + 1, close - open - 1) != "sp") return false;
+  const std::string offset = trim(std::string_view(text).substr(0, open));
+  if (offset.empty()) return false;
+  for (size_t i = 0; i < offset.size(); ++i) {
+    if (i == 0 && offset[i] == '-') continue;
+    if (!std::isdigit(static_cast<unsigned char>(offset[i]))) return false;
+  }
+  slot = offset + "(sp)";
+  return true;
+}
+
 std::string stackForward(std::string assembly) {
   auto lines = splitLines(assembly);
   std::vector<std::string> out;
@@ -294,6 +310,118 @@ std::string peephole(std::string assembly) {
 
   pass = eliminateDeadStackStores(pass);
   return joinLines(pass);
+}
+
+bool isFunctionEntryLabel(std::string_view line) {
+  const std::string text = stripComment(line);
+  if (text == "main:") return true;
+  return text.rfind(".Ltoyc.fn.", 0) == 0 && text.back() == ':';
+}
+
+std::unordered_map<std::string, std::string> selectPromotedStackSlots(
+    const std::vector<std::string>& lines, size_t begin, size_t end) {
+  bool hasCall = false;
+  std::unordered_map<std::string, int> counts;
+  for (size_t i = begin; i < end; ++i) {
+    auto inst = parseInst(lines[i]);
+    if (!inst.instruction) continue;
+    if (inst.opcode == "call") {
+      hasCall = true;
+      break;
+    }
+    if ((inst.opcode == "lw" || inst.opcode == "sw") && inst.operands.size() == 2) {
+      std::string slot;
+      if (parseStackSlot(inst.operands[1], slot)) ++counts[slot];
+    }
+  }
+  if (hasCall || counts.empty()) return {};
+
+  std::vector<std::pair<std::string, int>> ranked(counts.begin(), counts.end());
+  std::sort(ranked.begin(), ranked.end(), [](const auto& lhs, const auto& rhs) {
+    if (lhs.second != rhs.second) return lhs.second > rhs.second;
+    return lhs.first < rhs.first;
+  });
+
+  static constexpr const char* regs[] = {"t4", "t5", "t6"};
+  std::unordered_map<std::string, std::string> promoted;
+  for (size_t i = 0; i < ranked.size() && i < std::size(regs); ++i) {
+    if (ranked[i].second < 4) break;
+    promoted.emplace(ranked[i].first, regs[i]);
+  }
+  return promoted;
+}
+
+bool functionHasCall(const std::vector<std::string>& lines, size_t begin, size_t end) {
+  for (size_t i = begin; i < end; ++i) {
+    auto inst = parseInst(lines[i]);
+    if (inst.instruction && inst.opcode == "call") return true;
+  }
+  return false;
+}
+
+void removeNeverLoadedStackStores(std::vector<std::string>& lines, size_t begin, size_t end) {
+  if (functionHasCall(lines, begin, end)) return;
+
+  std::unordered_set<std::string> loadedSlots;
+  for (size_t i = begin; i < end; ++i) {
+    auto inst = parseInst(lines[i]);
+    if (inst.opcode != "lw" || inst.operands.size() != 2) continue;
+    std::string slot;
+    if (parseStackSlot(inst.operands[1], slot)) loadedSlots.insert(slot);
+  }
+
+  for (size_t i = begin; i < end; ++i) {
+    auto inst = parseInst(lines[i]);
+    if (inst.opcode != "sw" || inst.operands.size() != 2) continue;
+    std::string slot;
+    if (!parseStackSlot(inst.operands[1], slot)) continue;
+    if (!loadedSlots.contains(slot)) lines[i].clear();
+  }
+}
+
+void promoteStackSlotsInFunction(std::vector<std::string>& lines, size_t begin, size_t end) {
+  const auto promoted = selectPromotedStackSlots(lines, begin, end);
+  if (!promoted.empty()) {
+    for (size_t i = begin; i < end; ++i) {
+      auto inst = parseInst(lines[i]);
+      if (!inst.instruction || inst.operands.size() != 2) continue;
+      if (inst.opcode != "lw" && inst.opcode != "sw") continue;
+
+      std::string slot;
+      if (!parseStackSlot(inst.operands[1], slot)) continue;
+      auto it = promoted.find(slot);
+      if (it == promoted.end()) continue;
+
+      if (inst.opcode == "lw") {
+        if (inst.operands[0] == it->second) {
+          lines[i].clear();
+        } else {
+          lines[i] = formatInst("mv", {inst.operands[0], it->second});
+        }
+      } else {
+        if (inst.operands[0] == it->second) {
+          lines[i].clear();
+        } else {
+          lines[i] = formatInst("mv", {it->second, inst.operands[0]});
+        }
+      }
+    }
+  }
+  removeNeverLoadedStackStores(lines, begin, end);
+}
+
+std::string promoteLeafStackSlots(std::string assembly) {
+  auto lines = splitLines(assembly);
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (!isFunctionEntryLabel(lines[i])) continue;
+    size_t end = i + 1;
+    while (end < lines.size() && !isFunctionEntryLabel(lines[end])) ++end;
+    promoteStackSlotsInFunction(lines, i + 1, end);
+    i = end - 1;
+  }
+
+  lines.erase(std::remove(lines.begin(), lines.end(), ""), lines.end());
+  return joinLines(lines);
 }
 
 class Emitter {
@@ -670,7 +798,10 @@ private:
 
 std::string emitAssembly(const AllocatedMachineModule& module, bool optimize) {
   auto assembly = Emitter(module).emit();
-  if (optimize) assembly = peephole(std::move(assembly));
+  if (optimize) {
+    assembly = promoteLeafStackSlots(std::move(assembly));
+    assembly = peephole(std::move(assembly));
+  }
   return assembly;
 }
 
