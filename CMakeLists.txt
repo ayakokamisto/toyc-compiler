@@ -104,6 +104,7 @@ toyc_add_library(toyc_mir
   src/mir/mir_slot_forwarding.cpp
   src/mir/mir_dead_vreg.cpp
   src/mir/mir_copy_prop.cpp
+  src/mir/mir_liveness.cpp
 )
 target_link_libraries(toyc_mir PUBLIC toyc_support toyc_ir)
 
@@ -112,6 +113,7 @@ toyc_add_library(toyc_riscv32
   src/target/riscv32/asm_emitter.cpp
   src/target/riscv32/instruction_selector.cpp
   src/target/riscv32/spill_all_allocator.cpp
+  src/target/riscv32/reg_allocator.cpp
 )
 target_link_libraries(toyc_riscv32 PUBLIC toyc_support toyc_ir toyc_mir)
 

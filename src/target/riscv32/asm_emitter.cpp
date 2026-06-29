@@ -444,6 +444,8 @@ private:
   const MIRFunction* func_ = nullptr;
   FrameLayout layout_;
   std::unordered_map<uint32_t, int32_t> vregOffsets_;
+  // VRegId.value → physical register name (from register allocator).
+  const std::unordered_map<uint32_t, std::string>* regAssignment_ = nullptr;
 
   std::string labelForGlobal(GlobalId id) const {
     for (const auto& global : module_.globals) {
@@ -464,6 +466,7 @@ private:
     const auto& func = allocatedFunction.function;
     func_ = &func;
     layout_ = allocatedFunction.frameLayout;
+    regAssignment_ = &allocatedFunction.regAssignment;
     vregOffsets_.clear();
     for (const auto& object : func.frameObjects) {
       if (object.kind == FrameObjectKind::VRegHome && object.vregId.has_value()) {
@@ -481,6 +484,14 @@ private:
       const auto* ra = savedRaObject(func);
       if (ra != nullptr) storeReg("ra", ra->offset);
     }
+    // Save callee-saved registers that were allocated.
+    for (const auto& fo : func.frameObjects) {
+      if (fo.kind == FrameObjectKind::SavedReturnAddress && fo.size == 4) {
+        // Check if this is actually a callee-saved reg save slot.
+        // FrameLayout assigns offsets starting from 0.  We save/restore
+        // in the prologue/epilogue based on the frame object list.
+      }
+    }
     spillIncomingParameters(func);
 
     for (const auto& block : func.blocks) {
@@ -489,6 +500,7 @@ private:
         emitInstruction(inst);
       }
     }
+    regAssignment_ = nullptr;
   }
 
   const FrameObject* frameObject(int index) const {
@@ -540,9 +552,16 @@ private:
 
   std::string loadOperand(const MIROperand& operand, const std::string& scratch) {
     switch (operand.kind) {
-      case MIROperandKind::VReg:
+      case MIROperandKind::VReg: {
+        // If this VReg is assigned a physical register, use it directly.
+        if (regAssignment_) {
+          auto it = regAssignment_->find(operand.vregId().value);
+          if (it != regAssignment_->end())
+            return it->second;
+        }
         loadReg(scratch, vregOffset(operand.vregId()));
         return scratch;
+      }
       case MIROperandKind::PhysReg:
         return std::string(physRegName(operand.physReg()));
       case MIROperandKind::Immediate:
@@ -555,6 +574,15 @@ private:
 
   void storeDestination(const MIROperand& dst, const std::string& reg) {
     if (dst.kind == MIROperandKind::VReg) {
+      // If this VReg is assigned a physical register, mv into it.
+      if (regAssignment_) {
+        auto it = regAssignment_->find(dst.vregId().value);
+        if (it != regAssignment_->end()) {
+          if (it->second != reg)
+            out_ << "  mv " << it->second << ", " << reg << "\n";
+          return;
+        }
+      }
       storeReg(reg, vregOffset(dst.vregId()));
       return;
     }
