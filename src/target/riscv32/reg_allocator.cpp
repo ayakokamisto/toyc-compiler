@@ -52,29 +52,14 @@ AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
     af.function = std::move(func);
     auto& mf = af.function;
 
-    if (enableOpt_) {
-      auto inLoop = detectLoopBlocks(mf);
-
-      // Score each VReg by use frequency (loop ×12, normal ×1).
-      std::unordered_map<uint32_t, int> score;
-      int blk = 0;
-      for (auto& block : mf.blocks) {
-        int w = inLoop[blk] ? kLoopWeight : 1; ++blk;
-        for (auto& inst : block.insts)
-          for (size_t j = 0; j < inst.operands.size(); ++j)
-            if (inst.operands[j].kind == MIROperandKind::VReg)
-              score[inst.operands[j].vregId().value] += w;
-      }
-
-      // Rank by score descending, take top kRegCount above threshold.
-      std::vector<std::pair<uint32_t, int>> ranked(score.begin(), score.end());
-      std::sort(ranked.begin(), ranked.end(),
-                [](auto& a, auto& b) { return a.second > b.second; });
-
-      for (size_t i = 0; i < ranked.size() && i < kRegCount; ++i)
-        if (ranked[i].second >= kScoreThreshold)
-          af.regAssignment[ranked[i].first] = kRegs[i];
-    }
+    // Register allocation disabled.
+    // The current emitter uses a fixed register convention that doesn't
+    // compose with post-hoc allocation.  t0-t6 and a0-a7 all serve
+    // specific roles (scratch, result, address, peephole slots, args).
+    // Adding allocation on top causes register conflicts every time.
+    // Future: rewrite emitter to separate operand loading from register
+    // assignment, as src2 does with its InstructionSelector.
+    (void)enableOpt_;
 
     // Normalize saved ra.
     {
