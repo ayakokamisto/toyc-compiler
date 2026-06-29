@@ -45,7 +45,12 @@ bool verifyCanonicalOrReport(toyc::Module& module, std::ostream& err) {
   return false;
 }
 
-bool buildSSA(toyc::Module& module, std::ostream& err) {
+bool buildSSA(toyc::Module& module, std::ostream& err, bool optimize = false) {
+  if (optimize) {
+    for (const auto& func : module.functions()) {
+      (void)toyc::eliminateSelfTailRecursion(*func);
+    }
+  }
   for (const auto& func : module.functions()) {
     (void)toyc::removeUnreachableBlocks(*func);
   }
@@ -71,6 +76,8 @@ bool buildSSA(toyc::Module& module, std::ostream& err) {
 }
 
 bool optimizeSSA(toyc::Module& module, std::ostream& err) {
+  (void)toyc::foldGlobalConstantLoads(module);
+
   toyc::FunctionPassManager manager;
   manager.add(std::make_unique<toyc::InstCombineLitePass>());
   manager.add(std::make_unique<toyc::SCCPPass>());
@@ -80,6 +87,7 @@ bool optimizeSSA(toyc::Module& module, std::ostream& err) {
   for (const auto& func : module.functions()) {
     if (!manager.runToFixedPoint(*func, module, 3, err)) return false;
   }
+  (void)toyc::foldGlobalConstantLoads(module);
   toyc::rebuildCFG(module);
   auto verify = toyc::verifySSAModule(module);
   if (verify.ok) return true;
@@ -92,6 +100,7 @@ bool lowerOutOfSSA(toyc::Module& module, std::ostream& err) {
   toyc::OutOfSSAPass outOfSSA;
   for (const auto& func : module.functions()) {
     (void)outOfSSA.run(*func);
+    (void)toyc::cleanupCanonicalSlots(*func);
   }
   toyc::rebuildCFG(module);
   auto verify = toyc::verifyModule(module, toyc::VerificationMode::CanonicalSlot);
@@ -265,14 +274,14 @@ int main(int argc, char* argv[]) {
     }
 
     if (opts.dumpSsa) {
-      if (!buildSSA(*irModule, std::cerr)) return 1;
+      if (!buildSSA(*irModule, std::cerr, opts.optimize)) return 1;
       if (opts.optimize && !optimizeSSA(*irModule, std::cerr)) return 1;
       toyc::dumpIR(*irModule, std::cerr);
       return 0;
     }
 
     if (opts.optimize) {
-      if (!buildSSA(*irModule, std::cerr)) return 1;
+      if (!buildSSA(*irModule, std::cerr, true)) return 1;
       if (!optimizeSSA(*irModule, std::cerr)) return 1;
       if (!lowerOutOfSSA(*irModule, std::cerr)) return 1;
     }
@@ -358,7 +367,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (opts.optimize) {
-      if (!buildSSA(*irModule, std::cerr)) return 1;
+      if (!buildSSA(*irModule, std::cerr, true)) return 1;
       if (!optimizeSSA(*irModule, std::cerr)) return 1;
       if (!lowerOutOfSSA(*irModule, std::cerr)) return 1;
     }

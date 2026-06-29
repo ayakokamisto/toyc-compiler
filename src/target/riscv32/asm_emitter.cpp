@@ -345,7 +345,7 @@ std::unordered_map<std::string, std::string> selectPromotedStackSlots(
   static constexpr const char* regs[] = {"t4", "t5", "t6"};
   std::unordered_map<std::string, std::string> promoted;
   for (size_t i = 0; i < ranked.size() && i < std::size(regs); ++i) {
-    if (ranked[i].second < 4) break;
+    if (ranked[i].second < 2) break;
     promoted.emplace(ranked[i].first, regs[i]);
   }
   return promoted;

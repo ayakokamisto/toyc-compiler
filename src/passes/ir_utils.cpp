@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <climits>
 #include <functional>
+#include <unordered_map>
 
 namespace toyc {
 
@@ -224,6 +225,263 @@ ValueId appendConst(BasicBlock& block, Function& function, int32_t value) {
   inst->constValue = value;
   block.appendInst(std::move(inst));
   return result;
+}
+
+bool foldGlobalConstantLoads(Module& module) {
+  bool changed = false;
+  for (const auto& func : module.functions()) {
+    for (auto& block : func->blocks()) {
+      for (auto& inst : block->mutableInstructions()) {
+        if (inst->opcode != Opcode::GlobalLoad || !inst->result.has_value()) continue;
+        const auto* global = module.findGlobal(inst->global);
+        if (!global || global->kind != GlobalKind::Constant ||
+            global->initKind != IRGlobalInitKind::Static) {
+          continue;
+        }
+        inst->opcode = Opcode::ConstInt;
+        inst->constValue = global->staticInitialValue;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+namespace {
+
+struct SlotUseInfo {
+  int stores = 0;
+  int loads = 0;
+  BasicBlock* storeBlock = nullptr;
+  BasicBlock* loadBlock = nullptr;
+  std::size_t storeIndex = 0;
+  std::size_t loadIndex = 0;
+  ValueId storedValue;
+  ValueId loadedValue;
+};
+
+static std::unordered_map<uint32_t, SlotUseInfo> collectSlotUseInfo(Function& function) {
+  std::unordered_map<uint32_t, SlotUseInfo> slots;
+  for (auto& block : function.blocks()) {
+    auto& insts = block->mutableInstructions();
+    for (std::size_t i = 0; i < insts.size(); ++i) {
+      auto& inst = *insts[i];
+      if (inst.opcode == Opcode::SlotStore) {
+        auto& info = slots[inst.slot.value];
+        ++info.stores;
+        info.storeBlock = block.get();
+        info.storeIndex = i;
+        info.storedValue = inst.lhs;
+      } else if (inst.opcode == Opcode::SlotLoad && inst.result.has_value()) {
+        auto& info = slots[inst.slot.value];
+        ++info.loads;
+        info.loadBlock = block.get();
+        info.loadIndex = i;
+        info.loadedValue = *inst.result;
+      }
+    }
+  }
+  return slots;
+}
+
+static bool eraseInstructionsForSlots(Function& function, const std::unordered_set<uint32_t>& slotIds) {
+  bool changed = false;
+  for (auto& block : function.blocks()) {
+    auto& insts = block->mutableInstructions();
+    const auto oldSize = insts.size();
+    insts.erase(std::remove_if(insts.begin(), insts.end(), [&](const auto& inst) {
+                  return (inst->opcode == Opcode::SlotStore || inst->opcode == Opcode::SlotLoad) &&
+                         slotIds.contains(inst->slot.value);
+                }),
+                insts.end());
+    changed = changed || insts.size() != oldSize;
+  }
+  return changed;
+}
+
+static bool eraseDeadPureInstructions(Function& function) {
+  bool changed = false;
+  bool localChanged = true;
+  while (localChanged) {
+    localChanged = false;
+    auto used = collectUsedValues(function);
+    std::vector<ValueId> erased;
+    for (auto& block : function.blocks()) {
+      auto& insts = block->mutableInstructions();
+      const auto oldSize = insts.size();
+      insts.erase(std::remove_if(insts.begin(), insts.end(), [&](const auto& inst) {
+                    if (!inst->result.has_value()) return false;
+                    if (used.contains(*inst->result)) return false;
+                    if (!instructionIsRemovable(*inst)) return false;
+                    erased.push_back(*inst->result);
+                    return true;
+                  }),
+                  insts.end());
+      localChanged = localChanged || insts.size() != oldSize;
+    }
+    if (!erased.empty()) function.eraseValues(erased);
+    changed = changed || localChanged;
+  }
+  return changed;
+}
+
+static bool isTemporarySlot(const Function& function, uint32_t slotId) {
+  for (const auto& slot : function.slots()) {
+    if (slot.id.value == slotId) return slot.kind == SlotKind::Temporary;
+  }
+  return false;
+}
+
+static std::unique_ptr<Inst> makeSlotStore(SlotId slot, ValueId value) {
+  auto inst = std::make_unique<Inst>();
+  inst->opcode = Opcode::SlotStore;
+  inst->resultType = VoidIRType;
+  inst->slot = slot;
+  inst->lhs = value;
+  return inst;
+}
+
+} // namespace
+
+bool cleanupCanonicalSlots(Function& function) {
+  if (function.form() != IRForm::CanonicalSlot) return false;
+
+  bool changed = false;
+  bool localChanged = true;
+  while (localChanged) {
+    localChanged = false;
+    auto info = collectSlotUseInfo(function);
+    std::unordered_map<ValueId, ValueId> replacements;
+    std::unordered_set<uint32_t> eraseSlots;
+    std::vector<ValueId> eraseValues;
+    std::vector<SlotId> eraseSlotIds;
+
+    for (const auto& [slotId, use] : info) {
+      if (!isTemporarySlot(function, slotId)) continue;
+      if (use.loads == 0 && use.stores > 0) {
+        eraseSlots.insert(slotId);
+        eraseSlotIds.push_back(SlotId(slotId));
+        continue;
+      }
+      if (use.loads == 1 && use.stores == 1 && use.loadBlock == use.storeBlock &&
+          use.storeIndex < use.loadIndex) {
+        replacements[use.loadedValue] = use.storedValue;
+        eraseValues.push_back(use.loadedValue);
+        eraseSlots.insert(slotId);
+        eraseSlotIds.push_back(SlotId(slotId));
+      }
+    }
+
+    if (!replacements.empty()) {
+      localChanged |= replaceAllUses(function, replacements);
+      function.eraseValues(eraseValues);
+    }
+    if (!eraseSlots.empty()) {
+      localChanged |= eraseInstructionsForSlots(function, eraseSlots);
+      function.eraseSlots(eraseSlotIds);
+    }
+    localChanged |= eraseDeadPureInstructions(function);
+    changed = changed || localChanged;
+  }
+  rebuildCFG(function);
+  return changed;
+}
+
+bool eliminateSelfTailRecursion(Function& function) {
+  if (function.form() != IRForm::CanonicalSlot || function.params().empty()) return false;
+
+  std::vector<std::pair<BasicBlock*, std::size_t>> tailCalls;
+  for (auto& block : function.blocks()) {
+    auto* term = block->mutableTerminator();
+    if (!term || term->opcode != Opcode::Ret || !term->returnValue.has_value()) continue;
+    auto& insts = block->mutableInstructions();
+    if (insts.empty()) continue;
+    for (std::size_t i = insts.size(); i > 0; --i) {
+      auto& inst = *insts[i - 1];
+      if (!inst.result.has_value()) continue;
+      if (*inst.result != *term->returnValue) continue;
+      if (inst.opcode == Opcode::Call && inst.callee == function.id() &&
+          inst.arguments.size() == function.params().size()) {
+        tailCalls.push_back({block.get(), i - 1});
+      }
+      break;
+    }
+  }
+  if (tailCalls.empty()) return false;
+
+  auto* entry = function.entryBlock();
+  if (!entry) return false;
+
+  const auto originalEntryId = entry->id();
+  auto* loopEntry = function.createBlock("tail.entry");
+  const auto loopEntryId = loopEntry->id();
+  auto& blocks = function.mutableBlocks();
+  if (blocks.size() > 2 && blocks.back().get() == loopEntry) {
+    auto movedLoopEntry = std::move(blocks.back());
+    blocks.pop_back();
+    blocks.insert(blocks.begin() + 1, std::move(movedLoopEntry));
+  }
+
+  auto& entryInsts = entry->mutableInstructions();
+  std::size_t paramPrefix = 0;
+  while (paramPrefix < entryInsts.size() && paramPrefix < function.params().size()) {
+    const auto& inst = *entryInsts[paramPrefix];
+    const auto& param = function.params()[paramPrefix];
+    if (inst.opcode != Opcode::SlotStore || inst.slot != param.slotId ||
+        inst.lhs != param.valueId) {
+      break;
+    }
+    ++paramPrefix;
+  }
+
+  auto& loopInsts = loopEntry->mutableInstructions();
+  for (std::size_t i = paramPrefix; i < entryInsts.size(); ++i) {
+    loopInsts.push_back(std::move(entryInsts[i]));
+  }
+  entryInsts.erase(entryInsts.begin() + static_cast<std::ptrdiff_t>(paramPrefix), entryInsts.end());
+  if (entry->hasTerminator()) {
+    loopEntry->setTerminator(*entry->terminator());
+    entry->clearTerminator();
+  }
+  Terminator jumpToLoop;
+  jumpToLoop.opcode = Opcode::Br;
+  jumpToLoop.branchTarget = loopEntryId;
+  entry->setTerminator(jumpToLoop);
+
+  for (auto& block : function.blocks()) {
+    if (block.get() == entry) continue;
+    if (auto* term = block->mutableTerminator()) {
+      rewriteTerminatorTarget(*term, originalEntryId, loopEntryId);
+    }
+  }
+
+  std::vector<ValueId> erasedValues;
+  for (auto [block, index] : tailCalls) {
+    if (block == entry) {
+      block = loopEntry;
+      if (index < paramPrefix) continue;
+      index -= paramPrefix;
+    }
+    auto& insts = block->mutableInstructions();
+    if (index >= insts.size()) continue;
+    auto& call = *insts[index];
+    if (call.opcode != Opcode::Call || call.callee != function.id() || !call.result.has_value()) continue;
+    const auto args = call.arguments;
+    erasedValues.push_back(*call.result);
+    insts.erase(insts.begin() + static_cast<std::ptrdiff_t>(index));
+    for (std::size_t i = 0; i < function.params().size(); ++i) {
+      insts.push_back(makeSlotStore(function.params()[i].slotId, args[i]));
+    }
+    block->clearTerminator();
+    Terminator jump;
+    jump.opcode = Opcode::Br;
+    jump.branchTarget = loopEntryId;
+    block->setTerminator(jump);
+  }
+
+  function.eraseValues(erasedValues);
+  rebuildCFG(function);
+  return true;
 }
 
 void rewriteTerminatorTarget(Terminator& term, BlockId oldTarget, BlockId newTarget) {

@@ -3,6 +3,7 @@
 #include "toyc/passes/ir_utils.h"
 
 #include <algorithm>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +28,40 @@ static std::unordered_map<ValueId, int32_t> collectConstants(const Function& fun
   return constants;
 }
 
+static std::string valueKey(ValueId value) {
+  return std::to_string(value.value);
+}
+
+static void sortCommutative(ValueId& lhs, ValueId& rhs) {
+  if (rhs.value < lhs.value) std::swap(lhs, rhs);
+}
+
+static std::string expressionKey(const Inst& inst) {
+  switch (inst.opcode) {
+    case Opcode::Unary:
+      return "u:" + std::to_string(static_cast<int>(inst.unaryOp)) + ":" + valueKey(inst.unaryOperand);
+    case Opcode::Binary: {
+      ValueId lhs = inst.lhs;
+      ValueId rhs = inst.rhs;
+      if (inst.binaryOp == BinaryOpcode::Add || inst.binaryOp == BinaryOpcode::Multiply) {
+        sortCommutative(lhs, rhs);
+      }
+      return "b:" + std::to_string(static_cast<int>(inst.binaryOp)) + ":" + valueKey(lhs) + ":" + valueKey(rhs);
+    }
+    case Opcode::Compare: {
+      ValueId lhs = inst.cmpLhs;
+      ValueId rhs = inst.cmpRhs;
+      auto pred = inst.cmpPred;
+      if (pred == ComparePredicate::Equal || pred == ComparePredicate::NotEqual) {
+        sortCommutative(lhs, rhs);
+      }
+      return "c:" + std::to_string(static_cast<int>(pred)) + ":" + valueKey(lhs) + ":" + valueKey(rhs);
+    }
+    default:
+      return {};
+  }
+}
+
 PassResult InstCombineLitePass::run(Function& function) {
   if (function.form() != IRForm::SSA) return {};
 
@@ -36,15 +71,24 @@ PassResult InstCombineLitePass::run(Function& function) {
   std::vector<ValueId> erasedValues;
 
   for (auto& block : function.blocks()) {
+    std::unordered_map<std::string, ValueId> localExpressions;
     auto& insts = block->mutableInstructions();
     for (auto& inst : insts) {
       if (!inst->result.has_value()) continue;
-
       auto replaceWith = [&](ValueId value) {
         replacements[*inst->result] = value;
         erasedValues.push_back(*inst->result);
         changed = true;
       };
+
+      auto key = expressionKey(*inst);
+      if (!key.empty()) {
+        auto found = localExpressions.find(key);
+        if (found != localExpressions.end()) {
+          replaceWith(found->second);
+          continue;
+        }
+      }
 
       switch (inst->opcode) {
         case Opcode::Unary: {
@@ -89,6 +133,14 @@ PassResult InstCombineLitePass::run(Function& function) {
               turnIntoConst(*inst, 0);
               constants[*inst->result] = 0;
               changed = true;
+            } else if (inst->binaryOp == BinaryOpcode::Multiply && rhs == 2) {
+              inst->binaryOp = BinaryOpcode::Add;
+              inst->rhs = inst->lhs;
+              changed = true;
+            } else if (inst->binaryOp == BinaryOpcode::Modulo && rhs != 0 && inst->lhs == inst->rhs) {
+              turnIntoConst(*inst, 0);
+              constants[*inst->result] = 0;
+              changed = true;
             }
           }
           if (hasLhs) {
@@ -99,6 +151,10 @@ PassResult InstCombineLitePass::run(Function& function) {
             } else if (inst->binaryOp == BinaryOpcode::Multiply && lhs == 0) {
               turnIntoConst(*inst, 0);
               constants[*inst->result] = 0;
+              changed = true;
+            } else if (inst->binaryOp == BinaryOpcode::Multiply && lhs == 2) {
+              inst->binaryOp = BinaryOpcode::Add;
+              inst->lhs = inst->rhs;
               changed = true;
             }
           }
@@ -147,6 +203,10 @@ PassResult InstCombineLitePass::run(Function& function) {
         }
         default:
           break;
+      }
+      key = expressionKey(*inst);
+      if (!key.empty() && instructionIsRemovable(*inst)) {
+        localExpressions.emplace(std::move(key), *inst->result);
       }
     }
   }
