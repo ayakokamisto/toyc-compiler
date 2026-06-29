@@ -35,6 +35,22 @@ static bool prunePhiIncomingToCFG(Function& function) {
   return changed;
 }
 
+static bool rewritePhiPredecessor(Function& function, BlockId oldPred, BlockId newPred) {
+  bool changed = false;
+  for (auto& block : function.blocks()) {
+    for (auto& inst : block->mutableInstructions()) {
+      if (inst->opcode != Opcode::Phi) continue;
+      for (auto& incoming : inst->phiIncoming) {
+        if (incoming.predecessor == oldPred) {
+          incoming.predecessor = newPred;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 static bool simplifyBranches(Function& function) {
   bool changed = false;
   for (auto& block : function.blocks()) {
@@ -102,6 +118,7 @@ static bool mergeLinearBlocks(Function& function) {
     if (!succ || succ == &block || succ == function.entryBlock()) continue;
     if (block.successors().size() != 1 || succ->predecessors().size() != 1 || hasPhi(*succ)) continue;
 
+    const auto mergedBlockId = succ->id();
     block.clearTerminator();
     auto& src = succ->mutableInstructions();
     auto& dst = block.mutableInstructions();
@@ -110,7 +127,8 @@ static bool mergeLinearBlocks(Function& function) {
     }
     src.clear();
     if (succ->hasTerminator()) block.setTerminator(*succ->terminator());
-    function.eraseBlock(succ->id());
+    (void)rewritePhiPredecessor(function, mergedBlockId, block.id());
+    function.eraseBlock(mergedBlockId);
     rebuildCFG(function);
     (void)prunePhiIncomingToCFG(function);
     return true;

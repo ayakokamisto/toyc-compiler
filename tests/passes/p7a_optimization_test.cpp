@@ -267,6 +267,44 @@ TEST(P7AOptimizationTest, SimplifyCFGPrunesPhiIncomingAfterEdgeRemoval) {
   EXPECT_TRUE(verifySSAModule(module).ok);
 }
 
+TEST(P7AOptimizationTest, SimplifyCFGRewritesPhiIncomingAfterLinearMerge) {
+  Module module;
+  auto* func = module.createFunction("f", I32Type);
+  IRBuilder b;
+  b.setFunction(func);
+  auto entry = b.createBlock("entry");
+  auto header = b.createBlock("while.header");
+  auto body = b.createBlock("while.body");
+  auto latch = b.createBlock("while.latch");
+
+  b.setInsertBlock(entry);
+  auto zero = b.emitConstInt(0);
+  b.emitBranch(header);
+
+  auto* phi = b.createPhi(header, I32Type);
+  b.addPhiIncoming(*phi, entry, zero);
+
+  b.setInsertBlock(header);
+  b.emitBranch(body);
+
+  b.setInsertBlock(body);
+  b.emitBranch(latch);
+
+  b.setInsertBlock(latch);
+  auto one = b.emitConstInt(1);
+  b.addPhiIncoming(*phi, latch, one);
+  b.emitBranch(header);
+
+  rebuildCFG(*func);
+  func->setForm(IRForm::SSA);
+  ASSERT_TRUE(verifySSAModule(module).ok);
+
+  SimplifyCFGPass pass;
+  EXPECT_TRUE(pass.run(*func).changed);
+  rebuildCFG(*func);
+  EXPECT_TRUE(verifySSAModule(module).ok);
+}
+
 TEST(P7AOptimizationTest, OutOfSSALowersPhiAndP5AcceptsResult) {
   Module module;
   auto* func = module.createFunction("f", I32Type);
