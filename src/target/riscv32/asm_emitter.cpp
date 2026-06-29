@@ -647,13 +647,39 @@ private:
         out_ << "  # " << inst.comment << "\n";
         break;
       case MIROpcode::LoadImm:
-      case MIROpcode::Li:
-        out_ << "  li t2, " << inst.operands[1].imm() << "\n";
-        storeDestination(inst.operands[0], "t2");
+      case MIROpcode::Li: {
+        std::string dstReg;
+        if (inst.operands[0].kind == MIROperandKind::VReg && regAssignment_) {
+          auto it = regAssignment_->find(inst.operands[0].vregId().value);
+          if (it != regAssignment_->end()) dstReg = it->second;
+        }
+        if (!dstReg.empty()) {
+          out_ << "  li " << dstReg << ", " << inst.operands[1].imm() << "\n";
+          storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+        } else {
+          out_ << "  li t2, " << inst.operands[1].imm() << "\n";
+          storeDestination(inst.operands[0], "t2");
+        }
         break;
+      }
       case MIROpcode::Move: {
-        std::string src = loadOperand(inst.operands[1], "t0");
-        storeDestination(inst.operands[0], src);
+        std::string dstReg, srcReg;
+        if (inst.operands[0].kind == MIROperandKind::VReg && regAssignment_) {
+          auto it = regAssignment_->find(inst.operands[0].vregId().value);
+          if (it != regAssignment_->end()) dstReg = it->second;
+        }
+        if (inst.operands[1].kind == MIROperandKind::VReg && regAssignment_) {
+          auto it = regAssignment_->find(inst.operands[1].vregId().value);
+          if (it != regAssignment_->end()) srcReg = it->second;
+        }
+        if (!dstReg.empty() && !srcReg.empty()) {
+          // Both have physical registers — pure mv.
+          out_ << "  mv " << dstReg << ", " << srcReg << "\n";
+          storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+        } else {
+          std::string src = loadOperand(inst.operands[1], "t0");
+          storeDestination(inst.operands[0], src);
+        }
         break;
       }
       case MIROpcode::LoadFrame: {
@@ -720,6 +746,32 @@ private:
   }
 
   void emitBinary(const MIRInstruction& inst) {
+    // Check if all operands and result have physical registers.
+    // If so, emit a pure register instruction (no stack traffic).
+    std::string dstReg, lhsReg, rhsReg;
+    if (inst.operands[0].kind == MIROperandKind::VReg && regAssignment_) {
+      auto it = regAssignment_->find(inst.operands[0].vregId().value);
+      if (it != regAssignment_->end()) dstReg = it->second;
+    }
+    if (inst.operands[1].kind == MIROperandKind::VReg && regAssignment_) {
+      auto it = regAssignment_->find(inst.operands[1].vregId().value);
+      if (it != regAssignment_->end()) lhsReg = it->second;
+    }
+    if (inst.operands[2].kind == MIROperandKind::VReg && regAssignment_) {
+      auto it = regAssignment_->find(inst.operands[2].vregId().value);
+      if (it != regAssignment_->end()) rhsReg = it->second;
+    }
+
+    if (!dstReg.empty() && !lhsReg.empty() && !rhsReg.empty()) {
+      // Pure register operation.
+      out_ << "  " << mirOpcodeName(inst.opcode) << " "
+           << dstReg << ", " << lhsReg << ", " << rhsReg << "\n";
+      // Also write through to VRegHome for cross-block safety.
+      storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+      return;
+    }
+
+    // Fallback: load operands through scratch, compute, store.
     std::string lhs = loadOperand(inst.operands[1], "t0");
     std::string rhs = loadOperand(inst.operands[2], "t1");
     out_ << "  " << mirOpcodeName(inst.opcode) << " t2, " << lhs << ", " << rhs << "\n";
@@ -727,15 +779,35 @@ private:
   }
 
   void emitImmediate(const MIRInstruction& inst) {
-    std::string lhs = loadOperand(inst.operands[1], "t0");
+    // Check if operands and result have physical registers.
+    std::string dstReg, lhsReg;
+    if (inst.operands[0].kind == MIROperandKind::VReg && regAssignment_) {
+      auto it = regAssignment_->find(inst.operands[0].vregId().value);
+      if (it != regAssignment_->end()) dstReg = it->second;
+    }
+    if (inst.operands[1].kind == MIROperandKind::VReg && regAssignment_) {
+      auto it = regAssignment_->find(inst.operands[1].vregId().value);
+      if (it != regAssignment_->end()) lhsReg = it->second;
+    }
     int32_t imm = inst.operands[2].imm();
+
+    if (!dstReg.empty() && !lhsReg.empty() && fitsI12(imm)) {
+      // Pure register-immediate operation.
+      out_ << "  " << mirOpcodeName(inst.opcode) << " "
+           << dstReg << ", " << lhsReg << ", " << imm << "\n";
+      storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+      return;
+    }
+
+    // Fallback.
+    std::string lhs = loadOperand(inst.operands[1], "t0");
     if (fitsI12(imm)) {
       out_ << "  " << mirOpcodeName(inst.opcode) << " t2, " << lhs << ", " << imm << "\n";
     } else {
-      out_ << "  li t1, " << imm << "\n";
+      out_ << "  li t3, " << imm << "\n";
       const char* op = inst.opcode == MIROpcode::Addi ? "add" :
                        inst.opcode == MIROpcode::Xori ? "xor" : "sltu";
-      out_ << "  " << op << " t2, " << lhs << ", t1\n";
+      out_ << "  " << op << " t2, " << lhs << ", t3\n";
     }
     storeDestination(inst.operands[0], "t2");
   }
