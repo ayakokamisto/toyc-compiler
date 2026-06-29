@@ -1,8 +1,7 @@
-/// Frequency-guided register allocator — assigns t4/t5/t6 to hot VRegs.
-///
-/// t4-t6 are exclusively reserved for this allocator (promoteLeafStackSlots
-/// is disabled).  Other registers remain for emitter internal use:
-///   t0,t1 → BlockVRegCache   t2 → binary results   t3 → address computation
+/// Frequency-guided register allocator — assigns a2-a5 to hot VRegs
+/// in leaf functions.  t4-t6 are reserved for promoteLeafStackSlots.
+///   t0,t1 → BlockVRegCache   t2 → binary results   t3 → address
+///   t4,t5,t6 → promoteLeafStackSlots   a2-a5 → this allocator
 
 #include "toyc/target/riscv32/reg_allocator.h"
 
@@ -14,8 +13,8 @@ namespace toyc::riscv32 {
 
 namespace {
 
-constexpr const char* kRegs[] = {"t4", "t5", "t6"};
-constexpr int kRegCount = 3;
+constexpr const char* kRegs[] = {"a2", "a3", "a4", "a5"};
+constexpr int kRegCount = 4;
 constexpr int kScoreThreshold = 4;
 constexpr int kLoopWeight = 12;
 
