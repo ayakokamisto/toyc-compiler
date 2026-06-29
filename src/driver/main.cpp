@@ -12,6 +12,7 @@
 #include "toyc/ir/verifier.h"
 #include "toyc/lowering/ast_to_ir.h"
 #include "toyc/mir/mir.h"
+#include "toyc/mir/mir_copy_prop.h"
 #include "toyc/mir/mir_dead_vreg.h"
 #include "toyc/mir/mir_slot_forwarding.h"
 #include "toyc/mir/verifier.h"
@@ -308,6 +309,8 @@ int main(int argc, char* argv[]) {
 
     for (auto& func : mirModule->functions) {
       (void)toyc::cleanupDeadVRegs(func);
+      (void)toyc::propagateMIRCopies(func);
+      (void)toyc::cleanupDeadVRegs(func);
       (void)toyc::forwardMIRSlots(func);
       (void)toyc::cleanupDeadVRegs(func);
     }
@@ -398,8 +401,10 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    // MIR cleanup passes: dead VReg removal → slot forwarding → dead VReg again.
+    // MIR cleanup pipeline: dead VReg → copy prop → dead VReg → slot fwd → dead VReg.
     for (auto& func : mirModule->functions) {
+      (void)toyc::cleanupDeadVRegs(func);
+      (void)toyc::propagateMIRCopies(func);
       (void)toyc::cleanupDeadVRegs(func);
       (void)toyc::forwardMIRSlots(func);
       (void)toyc::cleanupDeadVRegs(func);
