@@ -784,6 +784,33 @@ private:
 
     cacheClear();
 
+    // Compute predecessor counts for IRSlot forwarding safety.
+    // Slot forwarding is only valid across single-predecessor edges;
+    // at merge points (>1 pred) the mapping must be cleared.
+    std::unordered_map<uint32_t, int> predCount;
+    for (const auto& block : func.blocks) {
+      if (block.insts.empty()) continue;
+      const auto& last = block.insts.back();
+      if (last.opcode == MIROpcode::Branch && !last.operands.empty() &&
+          last.operands[0].kind == MIROperandKind::BlockLabel) {
+        ++predCount[last.operands[0].blockLabel().value];
+      }
+      if (last.opcode == MIROpcode::BranchIfNonZero && last.operands.size() >= 2 &&
+          last.operands[1].kind == MIROperandKind::BlockLabel) {
+        ++predCount[last.operands[1].blockLabel().value];
+      }
+      // Fall-through to next block (if not an unconditional branch or return).
+      if (last.opcode != MIROpcode::Branch && last.opcode != MIROpcode::Return) {
+        // Find this block's index and add fall-through to the next block.
+        for (size_t k = 0; k + 1 < func.blocks.size(); ++k) {
+          if (func.blocks[k].id == block.id) {
+            ++predCount[func.blocks[k + 1].id.value];
+            break;
+          }
+        }
+      }
+    }
+
     // L4: analyze loops and pin hot VRegs before emitting any blocks.
     analyzeLoopsAndPin(func);
 
@@ -801,6 +828,11 @@ private:
 
     for (const auto& block : func.blocks) {
       out_ << block.label << ":\n";
+      // Clear IRSlot forwarding at control-flow merge points (>1 predecessor).
+      // A single-predecessor block (or entry with 0) can safely inherit
+      // StoreFrame→VReg mappings from its predecessor.
+      int npred = predCount[block.id.value];
+      if (npred != 1) slotToVReg_.clear();
       // L3: pre-scan this block for VReg liveness.
       computeBlockLiveness(block);
       currentInstIndex_ = 0;
