@@ -18,6 +18,11 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
+
+namespace {
+constexpr std::size_t kLongConstChainFoldThreshold = 64;
+}
 
 namespace toyc {
 
@@ -246,6 +251,47 @@ static ValueId emitValue(LoweringContext& ctx, const Expr& expr) {
     // Logical AND / OR — must use short-circuit in value context.
     if (binary->op() == BinaryOperator::LogicalAnd || binary->op() == BinaryOperator::LogicalOr) {
       return emitLogicalValue(ctx, expr);
+    }
+
+    std::vector<const BinaryExpr*> chain;
+    const Expr* cursor = binary;
+    while (auto* cursorBinary = dynamic_cast<const BinaryExpr*>(cursor)) {
+      if (cursorBinary->op() == BinaryOperator::LogicalAnd ||
+          cursorBinary->op() == BinaryOperator::LogicalOr) {
+        break;
+      }
+      chain.push_back(cursorBinary);
+      cursor = cursorBinary->lhs();
+    }
+
+    if (chain.size() >= kLongConstChainFoldThreshold) {
+      if (auto exprInfo = ctx.sema.exprInfo(expr); exprInfo && exprInfo->constantValue.has_value()) {
+        return ctx.builder.emitConstInt(*exprInfo->constantValue);
+      }
+    }
+
+    if (chain.size() > 1) {
+      ValueId value = emitValue(ctx, *cursor);
+      for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        ValueId rhs = emitValue(ctx, *(*it)->rhs());
+        switch ((*it)->op()) {
+          case BinaryOperator::Add:      value = ctx.builder.emitBinary(BinaryOpcode::Add, value, rhs); break;
+          case BinaryOperator::Subtract: value = ctx.builder.emitBinary(BinaryOpcode::Subtract, value, rhs); break;
+          case BinaryOperator::Multiply: value = ctx.builder.emitBinary(BinaryOpcode::Multiply, value, rhs); break;
+          case BinaryOperator::Divide:   value = ctx.builder.emitBinary(BinaryOpcode::Divide, value, rhs); break;
+          case BinaryOperator::Modulo:   value = ctx.builder.emitBinary(BinaryOpcode::Modulo, value, rhs); break;
+          case BinaryOperator::Equal:        value = ctx.builder.emitCompare(ComparePredicate::Equal, value, rhs); break;
+          case BinaryOperator::NotEqual:     value = ctx.builder.emitCompare(ComparePredicate::NotEqual, value, rhs); break;
+          case BinaryOperator::Less:         value = ctx.builder.emitCompare(ComparePredicate::Less, value, rhs); break;
+          case BinaryOperator::LessEqual:    value = ctx.builder.emitCompare(ComparePredicate::LessEqual, value, rhs); break;
+          case BinaryOperator::Greater:      value = ctx.builder.emitCompare(ComparePredicate::Greater, value, rhs); break;
+          case BinaryOperator::GreaterEqual: value = ctx.builder.emitCompare(ComparePredicate::GreaterEqual, value, rhs); break;
+          default:
+            ctx.emitError("Lowering: unknown binary operator");
+            return ctx.builder.emitConstInt(0);
+        }
+      }
+      return value;
     }
 
     ValueId lhs = emitValue(ctx, *binary->lhs());

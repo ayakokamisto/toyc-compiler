@@ -140,6 +140,7 @@ class BinaryExpr : public Expr {
 public:
   BinaryExpr(BinaryOperator op, std::unique_ptr<Expr> l, std::unique_ptr<Expr> r)
       : Expr(ASTKind::BinaryExpr), op_(op), lhs_(std::move(l)), rhs_(std::move(r)) {}
+  ~BinaryExpr() override;
   [[nodiscard]] BinaryOperator op() const { return op_; }
   [[nodiscard]] const Expr* lhs() const { return lhs_.get(); }
   [[nodiscard]] const Expr* rhs() const { return rhs_.get(); }

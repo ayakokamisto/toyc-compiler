@@ -78,7 +78,7 @@ bool optimizeSSA(toyc::Module& module, std::ostream& err) {
   manager.add(std::make_unique<toyc::DCEPass>());
 
   for (const auto& func : module.functions()) {
-    if (!manager.runToFixedPoint(*func, module, 8, err)) return false;
+    if (!manager.runToFixedPoint(*func, module, 3, err)) return false;
   }
   toyc::rebuildCFG(module);
   auto verify = toyc::verifySSAModule(module);

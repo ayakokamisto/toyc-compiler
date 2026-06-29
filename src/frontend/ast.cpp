@@ -2,6 +2,8 @@
 
 #include "toyc/frontend/ast.h"
 
+#include <vector>
+
 namespace toyc {
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -42,6 +44,17 @@ const char* binaryOpName(BinaryOperator op) {
     case BinaryOperator::Modulo:         return "Modulo";
   }
   return "unknown";
+}
+
+BinaryExpr::~BinaryExpr() {
+  std::vector<std::unique_ptr<Expr>> detached;
+  auto cursor = std::move(lhs_);
+  while (cursor && cursor->kind() == ASTKind::BinaryExpr) {
+    auto* binary = static_cast<BinaryExpr*>(cursor.get());
+    auto next = std::move(binary->lhs_);
+    detached.push_back(std::move(binary->rhs_));
+    cursor = std::move(next);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

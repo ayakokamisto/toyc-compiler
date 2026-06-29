@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <sstream>
+#include <string>
 
 namespace toyc {
 
@@ -50,7 +51,7 @@ static Module lowerToOptimizedSSA(const std::string& source) {
   manager.add(std::make_unique<DCEPass>());
   std::ostringstream diagnostics;
   for (const auto& func : ir->functions()) {
-    EXPECT_TRUE(manager.runToFixedPoint(*func, *ir, 8, diagnostics)) << diagnostics.str();
+    EXPECT_TRUE(manager.runToFixedPoint(*func, *ir, 3, diagnostics)) << diagnostics.str();
   }
   rebuildCFG(*ir);
   EXPECT_TRUE(verifyModule(*ir, VerificationMode::SSA).ok);
@@ -72,6 +73,20 @@ static int countOpcode(const Function& func, Opcode opcode) {
     }
   }
   return count;
+}
+
+static std::string constantAddChainSource(int terms) {
+  std::string source = "int main() { return 0";
+  for (int i = 0; i < terms; ++i) source += " + 1";
+  source += "; }";
+  return source;
+}
+
+static std::string sideEffectAddChainSource(int terms) {
+  std::string source = "int side() { return 7; }\nint main() { return side()";
+  for (int i = 0; i < terms; ++i) source += " + 1";
+  source += "; }";
+  return source;
 }
 
 TEST(P7AOptimizationTest, VerifyModuleSSAMatchesFullSSAVerifier) {
@@ -165,6 +180,25 @@ int main() {
   const auto* main = mainFunc(module);
   ASSERT_NE(main, nullptr);
   EXPECT_EQ(countOpcode(*main, Opcode::Binary), 0);
+  EXPECT_EQ(countOpcode(*main, Opcode::Call), 1);
+}
+
+TEST(P7BCompileTimeTest, LongConstantChainFoldsToSingleReturnConstant) {
+  auto module = lowerToOptimizedSSA(constantAddChainSource(3000));
+  const auto* main = mainFunc(module);
+  ASSERT_NE(main, nullptr);
+  ASSERT_NE(main->entryBlock(), nullptr);
+  auto* terminator = main->entryBlock()->terminator();
+  ASSERT_NE(terminator, nullptr);
+  ASSERT_TRUE(terminator->returnValue.has_value());
+  EXPECT_EQ(constValueOf(*main, *terminator->returnValue), 3000);
+  EXPECT_EQ(countOpcode(*main, Opcode::Binary), 0);
+}
+
+TEST(P7BCompileTimeTest, LongChainWithCallKeepsSideEffect) {
+  auto module = lowerToOptimizedSSA(sideEffectAddChainSource(128));
+  const auto* main = mainFunc(module);
+  ASSERT_NE(main, nullptr);
   EXPECT_EQ(countOpcode(*main, Opcode::Call), 1);
 }
 

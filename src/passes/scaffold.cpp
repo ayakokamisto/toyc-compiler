@@ -22,13 +22,13 @@ bool FunctionPassManager::runToFixedPoint(Function& function, const Module& modu
     for (auto& pass : passes_) {
       auto result = pass->run(function);
       changedThisRound = changedThisRound || result.changed;
-      auto verify = verifySSAFunction(function, module);
-      if (!verify.ok) {
-        diagnostics << "internal optimizer diagnostic: pass " << pass->name()
-                    << " produced invalid SSA IR\n";
-        for (const auto& err : verify.errors) diagnostics << "  " << err << "\n";
-        return false;
-      }
+    }
+    auto verify = verifySSAFunction(function, module);
+    if (!verify.ok) {
+      diagnostics << "internal optimizer diagnostic: fixed-point round " << iteration
+                  << " produced invalid SSA IR\n";
+      for (const auto& err : verify.errors) diagnostics << "  " << err << "\n";
+      return false;
     }
     if (!changedThisRound) return true;
   }

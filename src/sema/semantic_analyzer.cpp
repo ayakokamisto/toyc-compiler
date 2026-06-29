@@ -4,6 +4,7 @@
 #include "toyc/sema/constant_evaluator.h"
 
 #include <climits>
+#include <vector>
 
 namespace toyc {
 
@@ -568,6 +569,26 @@ ExprSemanticInfo SemanticAnalyzer::analyzeUnaryExpr(const UnaryExpr& expr) {
 }
 
 ExprSemanticInfo SemanticAnalyzer::analyzeBinaryExpr(const BinaryExpr& expr) {
+  if (expr.op() != BinaryOperator::LogicalAnd && expr.op() != BinaryOperator::LogicalOr) {
+    std::vector<const BinaryExpr*> chain;
+    const Expr* cursor = &expr;
+    while (cursor->kind() == ASTKind::BinaryExpr) {
+      const auto& binary = static_cast<const BinaryExpr&>(*cursor);
+      if (binary.op() == BinaryOperator::LogicalAnd || binary.op() == BinaryOperator::LogicalOr) break;
+      chain.push_back(&binary);
+      cursor = binary.lhs();
+    }
+    if (chain.size() > 1) {
+      auto info = analyzeExpr(*cursor);
+      for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        auto rhsInfo = analyzeExpr(*(*it)->rhs());
+        info = applyBinaryOperator(**it, info, rhsInfo);
+        model_.setExprInfo(*it, info);
+      }
+      return info;
+    }
+  }
+
   auto lhsInfo = analyzeExpr(*expr.lhs());
 
   // Short-circuit &&
@@ -625,6 +646,12 @@ ExprSemanticInfo SemanticAnalyzer::analyzeBinaryExpr(const BinaryExpr& expr) {
   // Non-short-circuit.
   auto rhsInfo = analyzeExpr(*expr.rhs());
 
+  return applyBinaryOperator(expr, lhsInfo, rhsInfo);
+}
+
+ExprSemanticInfo SemanticAnalyzer::applyBinaryOperator(const BinaryExpr& expr,
+                                                       const ExprSemanticInfo& lhsInfo,
+                                                       const ExprSemanticInfo& rhsInfo) {
   if (lhsInfo.type == SemanticType::Void || rhsInfo.type == SemanticType::Void) {
     reportError(expr.range().begin, "binary operator requires int operands");
     return {SemanticType::Error, std::nullopt};

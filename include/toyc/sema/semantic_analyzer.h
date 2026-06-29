@@ -54,6 +54,9 @@ private:
   ExprSemanticInfo analyzeCallExpr(const CallExpr& expr);
   ExprSemanticInfo analyzeUnaryExpr(const UnaryExpr& expr);
   ExprSemanticInfo analyzeBinaryExpr(const BinaryExpr& expr);
+  ExprSemanticInfo applyBinaryOperator(const BinaryExpr& expr,
+                                       const ExprSemanticInfo& lhsInfo,
+                                       const ExprSemanticInfo& rhsInfo);
 
   // ── Constant evaluation helpers ───────────────────────────────────────────
   /// Evaluate a constant expression with symbol resolution (required mode).

@@ -15,10 +15,23 @@ static void turnIntoConst(Inst& inst, int32_t value) {
   inst.arguments.clear();
 }
 
+static std::unordered_map<ValueId, int32_t> collectConstants(const Function& function) {
+  std::unordered_map<ValueId, int32_t> constants;
+  for (const auto& block : function.blocks()) {
+    for (const auto& inst : block->instructions()) {
+      if (inst->opcode == Opcode::ConstInt && inst->result.has_value()) {
+        constants[*inst->result] = inst->constValue;
+      }
+    }
+  }
+  return constants;
+}
+
 PassResult InstCombineLitePass::run(Function& function) {
   if (function.form() != IRForm::SSA) return {};
 
   bool changed = false;
+  auto constants = collectConstants(function);
   std::unordered_map<ValueId, ValueId> replacements;
   std::vector<ValueId> erasedValues;
 
@@ -35,60 +48,70 @@ PassResult InstCombineLitePass::run(Function& function) {
 
       switch (inst->opcode) {
         case Opcode::Unary: {
-          auto operand = constValueOf(function, inst->unaryOperand);
-          if (operand.has_value()) {
-            auto folded = foldUnary(inst->unaryOp, *operand);
+          auto operand = constants.find(inst->unaryOperand);
+          if (operand != constants.end()) {
+            auto folded = foldUnary(inst->unaryOp, operand->second);
             if (folded.folded) {
               turnIntoConst(*inst, folded.value);
+              constants[*inst->result] = folded.value;
               changed = true;
             }
           }
           break;
         }
         case Opcode::Binary: {
-          auto lhs = constValueOf(function, inst->lhs);
-          auto rhs = constValueOf(function, inst->rhs);
-          if (lhs.has_value() && rhs.has_value()) {
-            auto folded = foldBinary(inst->binaryOp, *lhs, *rhs);
+          auto lhsIt = constants.find(inst->lhs);
+          auto rhsIt = constants.find(inst->rhs);
+          bool hasLhs = lhsIt != constants.end();
+          bool hasRhs = rhsIt != constants.end();
+          int32_t lhs = hasLhs ? lhsIt->second : 0;
+          int32_t rhs = hasRhs ? rhsIt->second : 0;
+          if (hasLhs && hasRhs) {
+            auto folded = foldBinary(inst->binaryOp, lhs, rhs);
             if (folded.folded) {
               turnIntoConst(*inst, folded.value);
+              constants[*inst->result] = folded.value;
               changed = true;
             }
             break;
           }
-          if (rhs.has_value()) {
-            if ((inst->binaryOp == BinaryOpcode::Add || inst->binaryOp == BinaryOpcode::Subtract) && *rhs == 0) {
+          if (hasRhs) {
+            if ((inst->binaryOp == BinaryOpcode::Add || inst->binaryOp == BinaryOpcode::Subtract) && rhs == 0) {
               replaceWith(inst->lhs);
             } else if ((inst->binaryOp == BinaryOpcode::Multiply || inst->binaryOp == BinaryOpcode::Divide) &&
-                       *rhs == 1) {
+                       rhs == 1) {
               replaceWith(inst->lhs);
-            } else if (inst->binaryOp == BinaryOpcode::Modulo && *rhs == 1) {
+            } else if (inst->binaryOp == BinaryOpcode::Modulo && rhs == 1) {
               turnIntoConst(*inst, 0);
+              constants[*inst->result] = 0;
               changed = true;
-            } else if (inst->binaryOp == BinaryOpcode::Multiply && *rhs == 0) {
+            } else if (inst->binaryOp == BinaryOpcode::Multiply && rhs == 0) {
               turnIntoConst(*inst, 0);
+              constants[*inst->result] = 0;
               changed = true;
             }
           }
-          if (lhs.has_value()) {
-            if (inst->binaryOp == BinaryOpcode::Add && *lhs == 0) {
+          if (hasLhs) {
+            if (inst->binaryOp == BinaryOpcode::Add && lhs == 0) {
               replaceWith(inst->rhs);
-            } else if (inst->binaryOp == BinaryOpcode::Multiply && *lhs == 1) {
+            } else if (inst->binaryOp == BinaryOpcode::Multiply && lhs == 1) {
               replaceWith(inst->rhs);
-            } else if (inst->binaryOp == BinaryOpcode::Multiply && *lhs == 0) {
+            } else if (inst->binaryOp == BinaryOpcode::Multiply && lhs == 0) {
               turnIntoConst(*inst, 0);
+              constants[*inst->result] = 0;
               changed = true;
             }
           }
           break;
         }
         case Opcode::Compare: {
-          auto lhs = constValueOf(function, inst->cmpLhs);
-          auto rhs = constValueOf(function, inst->cmpRhs);
-          if (lhs.has_value() && rhs.has_value()) {
-            auto folded = foldCompare(inst->cmpPred, *lhs, *rhs);
+          auto lhsIt = constants.find(inst->cmpLhs);
+          auto rhsIt = constants.find(inst->cmpRhs);
+          if (lhsIt != constants.end() && rhsIt != constants.end()) {
+            auto folded = foldCompare(inst->cmpPred, lhsIt->second, rhsIt->second);
             if (folded.folded) {
               turnIntoConst(*inst, folded.value);
+              constants[*inst->result] = folded.value;
               changed = true;
             }
           } else if (inst->cmpLhs == inst->cmpRhs) {
@@ -106,6 +129,7 @@ PassResult InstCombineLitePass::run(Function& function) {
                 break;
             }
             turnIntoConst(*inst, value);
+            constants[*inst->result] = value;
             changed = true;
           }
           break;
