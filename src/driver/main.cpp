@@ -309,10 +309,6 @@ int main(int argc, char* argv[]) {
 
     for (auto& func : mirModule->functions) {
       (void)toyc::cleanupDeadVRegs(func);
-      (void)toyc::propagateMIRCopies(func);
-      (void)toyc::cleanupDeadVRegs(func);
-      (void)toyc::forwardMIRSlots(func);
-      (void)toyc::cleanupDeadVRegs(func);
     }
 
     toyc::dumpMIR(*mirModule, std::cerr);
@@ -401,12 +397,10 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    // MIR cleanup pipeline: dead VReg → copy prop → dead VReg → slot fwd → dead VReg.
+    // MIR cleanup: dead VReg removal (L3).  Slot forwarding and copy
+    // propagation (L1/L2) are disabled — they don't reduce spills in the
+    // spill-all model and can increase frame size.
     for (auto& func : mirModule->functions) {
-      (void)toyc::cleanupDeadVRegs(func);
-      (void)toyc::propagateMIRCopies(func);
-      (void)toyc::cleanupDeadVRegs(func);
-      (void)toyc::forwardMIRSlots(func);
       (void)toyc::cleanupDeadVRegs(func);
     }
 
