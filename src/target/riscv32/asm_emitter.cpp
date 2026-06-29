@@ -864,7 +864,9 @@ private:
 std::string emitAssembly(const AllocatedMachineModule& module, bool optimize) {
   auto assembly = Emitter(module).emit();
   if (optimize) {
-    assembly = promoteLeafStackSlots(std::move(assembly));
+    // promoteLeafStackSlots disabled: its t4-t6 conflict with the
+    // register allocator pool.  The allocator's 18 registers (t4-t6,
+    // a2-a5, s1-s11 for leaf functions) more than compensate.
     assembly = peephole(std::move(assembly));
   }
   return assembly;
