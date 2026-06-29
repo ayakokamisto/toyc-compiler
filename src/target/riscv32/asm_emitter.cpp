@@ -445,6 +445,37 @@ private:
   FrameLayout layout_;
   std::unordered_map<uint32_t, int32_t> vregOffsets_;
 
+  // ── Block-local VReg cache (t0/t1) ──────────────────────────────────
+  // Tracks which VRegs are currently in t0 and t1.  Eliminates
+  // redundant lw when a value was just stored to its VRegHome.
+  // Invalidated at block boundaries and after calls — strictly block-local.
+  uint32_t cacheT0_ = ~0u;  // VRegId.value in t0, ~0u = none
+  uint32_t cacheT1_ = ~0u;  // VRegId.value in t1, ~0u = none
+
+  void cacheClear() {
+    cacheT0_ = ~0u;
+    cacheT1_ = ~0u;
+  }
+
+  void cacheInvalidateReg(const std::string& reg) {
+    if (reg == "t0") cacheT0_ = ~0u;
+    else if (reg == "t1") cacheT1_ = ~0u;
+  }
+
+  // Record that `vreg` is now in register `reg`.
+  void cacheSetReg(const std::string& reg, uint32_t vreg) {
+    cacheInvalidateReg(reg);
+    if (reg == "t0") cacheT0_ = vreg;
+    else if (reg == "t1") cacheT1_ = vreg;
+  }
+
+  // Find which register holds `vreg`, or return empty.
+  std::string cacheFind(uint32_t vreg) const {
+    if (cacheT0_ == vreg) return "t0";
+    if (cacheT1_ == vreg) return "t1";
+    return {};
+  }
+
   std::string labelForGlobal(GlobalId id) const {
     for (const auto& global : module_.globals) {
       if (global.id == id && global.name.rfind(".Ltoyc.", 0) == 0) return global.name;
@@ -489,9 +520,11 @@ private:
         // in the prologue/epilogue based on the frame object list.
       }
     }
+    cacheClear();
     spillIncomingParameters(func);
 
     for (const auto& block : func.blocks) {
+      cacheClear();  // block-local: invalidate t0/t1 at each block entry
       out_ << block.label << ":\n";
       for (const auto& inst : block.insts) {
         emitInstruction(inst);
@@ -548,12 +581,19 @@ private:
 
   std::string loadOperand(const MIROperand& operand, const std::string& scratch) {
     switch (operand.kind) {
-      case MIROperandKind::VReg:
+      case MIROperandKind::VReg: {
+        uint32_t vreg = operand.vregId().value;
+        // Block-local cache: if this VReg was just stored to t0 or t1,
+        // return that register instead of reloading from stack.
+        std::string cached = cacheFind(vreg);
+        if (!cached.empty()) return cached;
         loadReg(scratch, vregOffset(operand.vregId()));
         return scratch;
+      }
       case MIROperandKind::PhysReg:
         return std::string(physRegName(operand.physReg()));
       case MIROperandKind::Immediate:
+        cacheInvalidateReg(scratch);
         out_ << "  li " << scratch << ", " << operand.imm() << "\n";
         return scratch;
       default:
@@ -564,6 +604,8 @@ private:
   void storeDestination(const MIROperand& dst, const std::string& reg) {
     if (dst.kind == MIROperandKind::VReg) {
       storeReg(reg, vregOffset(dst.vregId()));
+      // Update block-local cache: this VReg is now in `reg`.
+      cacheSetReg(reg, dst.vregId().value);
       return;
     }
     if (dst.kind == MIROperandKind::PhysReg) {
@@ -643,7 +685,9 @@ private:
         emitImmediate(inst);
         break;
       case MIROpcode::Call:
+        cacheClear();  // call clobbers t0-t6
         out_ << "  call " << inst.comment << "\n";
+        cacheClear();
         break;
       case MIROpcode::Return:
         emitReturn();
