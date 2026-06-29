@@ -1,19 +1,47 @@
-/// Register allocator — currently disabled.
-/// The emitter uses t0-t3 internally (scratch, result, address).
-/// Assigning VRegs to these registers causes conflicts.
-/// Will be re-enabled after proper register conflict analysis.
+/// Frequency-guided register allocator — assigns t4/t5/t6 to hot VRegs.
+///
+/// t4-t6 are exclusively reserved for this allocator (promoteLeafStackSlots
+/// is disabled).  Other registers remain for emitter internal use:
+///   t0,t1 → BlockVRegCache   t2 → binary results   t3 → address computation
 
 #include "toyc/target/riscv32/reg_allocator.h"
 
 #include <algorithm>
-#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace toyc::riscv32 {
 
 namespace {
-// Register pool definition kept for reference when re-enabling.
+
+constexpr const char* kRegs[] = {"t4", "t5", "t6"};
+constexpr int kRegCount = 3;
+constexpr int kScoreThreshold = 4;
+constexpr int kLoopWeight = 12;
+
+std::vector<bool> detectLoopBlocks(const MIRFunction& func) {
+  int n = static_cast<int>(func.blocks.size());
+  std::vector<bool> inLoop(n, false);
+  std::unordered_map<uint32_t, int> bi;
+  for (int i = 0; i < n; ++i) bi[func.blocks[i].id.value] = i;
+  for (int i = 0; i < n; ++i) {
+    if (func.blocks[i].insts.empty()) continue;
+    const auto& last = func.blocks[i].insts.back();
+    auto check = [&](BlockId tgt) {
+      auto it = bi.find(tgt.value);
+      if (it != bi.end() && it->second <= i)
+        for (int j = it->second; j <= i; ++j) inLoop[j] = true;
+    };
+    if (last.opcode == MIROpcode::Branch && !last.operands.empty() &&
+        last.operands[0].kind == MIROperandKind::BlockLabel)
+      check(last.operands[0].blockLabel());
+    if (last.opcode == MIROpcode::BranchIfNonZero && last.operands.size() >= 2 &&
+        last.operands[1].kind == MIROperandKind::BlockLabel)
+      check(last.operands[1].blockLabel());
+  }
+  return inLoop;
+}
+
 } // namespace
 
 AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
@@ -25,8 +53,29 @@ AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
     af.function = std::move(func);
     auto& mf = af.function;
 
-    // Register allocation disabled — see file header for rationale.
-    (void)enableOpt_;
+    if (enableOpt_) {
+      auto inLoop = detectLoopBlocks(mf);
+
+      // Score each VReg by use frequency (loop ×12, normal ×1).
+      std::unordered_map<uint32_t, int> score;
+      int blk = 0;
+      for (auto& block : mf.blocks) {
+        int w = inLoop[blk] ? kLoopWeight : 1; ++blk;
+        for (auto& inst : block.insts)
+          for (size_t j = 0; j < inst.operands.size(); ++j)
+            if (inst.operands[j].kind == MIROperandKind::VReg)
+              score[inst.operands[j].vregId().value] += w;
+      }
+
+      // Rank by score descending, take top kRegCount above threshold.
+      std::vector<std::pair<uint32_t, int>> ranked(score.begin(), score.end());
+      std::sort(ranked.begin(), ranked.end(),
+                [](auto& a, auto& b) { return a.second > b.second; });
+
+      for (size_t i = 0; i < ranked.size() && i < kRegCount; ++i)
+        if (ranked[i].second >= kScoreThreshold)
+          af.regAssignment[ranked[i].first] = kRegs[i];
+    }
 
     // Normalize saved ra.
     {
