@@ -85,8 +85,10 @@ AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
     auto& mf = af.function;
 
     if (enableOpt_) {
-      // Step 1: union-find over Move instructions.
+      // Step 1: union-find over Move instructions AND slot forwarding.
       UnionFind uf;
+
+      // 1a. Move instructions (copy propagation).
       for (auto& block : mf.blocks)
         for (auto& inst : block.insts)
           if (inst.opcode == MIROpcode::Move &&
@@ -95,6 +97,65 @@ AllocatedMachineModule RegisterAllocator::allocate(MIRModule module) {
               inst.operands[1].kind == MIROperandKind::VReg)
             uf.unite(inst.operands[0].vregId().value,
                      inst.operands[1].vregId().value);
+
+      // 1b. Cross-block slot forwarding: unite StoreFrame src VRegs
+      // with LoadFrame dst VRegs for the same slot.  This makes the
+      // allocator assign the same register, eliminating the lw/sw
+      // round-trip in loop headers.
+      std::unordered_map<uint32_t, int> blockIndex;
+      for (int i = 0; i < static_cast<int>(mf.blocks.size()); ++i)
+        blockIndex[mf.blocks[i].id.value] = i;
+
+      for (int bi = 0; bi < static_cast<int>(mf.blocks.size()); ++bi) {
+        auto& block = mf.blocks[bi];
+        // Find the last StoreFrame to each slot in this block.
+        std::unordered_map<int, uint32_t> lastStore; // foIndex → VReg
+        for (auto& inst : block.insts) {
+          if (inst.opcode == MIROpcode::StoreFrame &&
+              inst.operands.size() >= 2 &&
+              inst.operands[0].kind == MIROperandKind::FrameSlot &&
+              inst.operands[1].kind == MIROperandKind::VReg)
+            lastStore[inst.operands[0].frameSlotIndex()] =
+                inst.operands[1].vregId().value;
+        }
+        // For each successor block, unite with the first LoadFrame of same slot.
+        for (auto& [foIdx, storeVReg] : lastStore) {
+          // Look at successor blocks (next block for fall-through, branch targets).
+          std::vector<int> succs;
+          if (!block.insts.empty()) {
+            const auto& last = block.insts.back();
+            if (last.opcode == MIROpcode::Branch && !last.operands.empty() &&
+                last.operands[0].kind == MIROperandKind::BlockLabel) {
+              auto it = blockIndex.find(last.operands[0].blockLabel().value);
+              if (it != blockIndex.end()) succs.push_back(it->second);
+            } else if (last.opcode == MIROpcode::BranchIfNonZero &&
+                       last.operands.size() >= 2 &&
+                       last.operands[1].kind == MIROperandKind::BlockLabel) {
+              auto it = blockIndex.find(last.operands[1].blockLabel().value);
+              if (it != blockIndex.end()) succs.push_back(it->second);
+              // Fall-through.
+              if (bi + 1 < static_cast<int>(mf.blocks.size()))
+                succs.push_back(bi + 1);
+            } else if (last.opcode != MIROpcode::Return) {
+              // Fall-through only.
+              if (bi + 1 < static_cast<int>(mf.blocks.size()))
+                succs.push_back(bi + 1);
+            }
+          }
+          for (int si : succs) {
+            for (auto& inst : mf.blocks[si].insts) {
+              if (inst.opcode == MIROpcode::LoadFrame &&
+                  inst.operands.size() >= 2 &&
+                  inst.operands[0].kind == MIROperandKind::VReg &&
+                  inst.operands[1].kind == MIROperandKind::FrameSlot &&
+                  inst.operands[1].frameSlotIndex() == foIdx) {
+                uf.unite(inst.operands[0].vregId().value, storeVReg);
+                break; // Only first LoadFrame in successor
+              }
+            }
+          }
+        }
+      }
 
       // Step 2: detect loops.
       auto inLoop = detectLoopBlocks(mf);

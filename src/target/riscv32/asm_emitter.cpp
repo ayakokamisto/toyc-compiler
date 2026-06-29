@@ -446,6 +446,12 @@ private:
   std::unordered_map<uint32_t, int32_t> vregOffsets_;
   const std::unordered_map<uint32_t, std::string>* regAssignment_ = nullptr;
 
+  // ── IRSlot forwarding cache ──────────────────────────────────────
+  // Maps IRSlot frame index → VReg that last stored to it.
+  // When a LoadFrame hits, if the stored VReg is still in a register
+  // (via regAssignment), skip the lw and use the register directly.
+  std::unordered_map<int, uint32_t> slotToVReg_;
+
   // ── Block-local VReg cache (t0/t1) ──────────────────────────────────
   // Tracks which VRegs are currently in t0 and t1.  Eliminates
   // redundant lw when a value was just stored to its VRegHome.
@@ -456,6 +462,10 @@ private:
   void cacheClear() {
     cacheT0_ = ~0u;
     cacheT1_ = ~0u;
+    // slotToVReg_ intentionally NOT cleared — it carries StoreFrame→LoadFrame
+    // mappings across block boundaries.  Safety is ensured by checking that
+    // both VRegs share the same assigned physical register (same union-find
+    // equivalence class) before forwarding.
   }
 
   void cacheInvalidateReg(const std::string& reg) {
@@ -684,6 +694,25 @@ private:
       }
       case MIROpcode::LoadFrame: {
         const auto* object = frameObject(inst.operands[1].frameSlotIndex());
+        int foIndex = inst.operands[1].frameSlotIndex();
+
+        // Check if this slot's value is already in a register.
+        if (regAssignment_) {
+          auto slotIt = slotToVReg_.find(foIndex);
+          if (slotIt != slotToVReg_.end()) {
+            auto dstIt = regAssignment_->find(inst.operands[0].vregId().value);
+            auto srcIt = regAssignment_->find(slotIt->second);
+            if (dstIt != regAssignment_->end() && srcIt != regAssignment_->end() &&
+                dstIt->second == srcIt->second) {
+              // Both LoadFrame dst and StoreFrame src share the same physical
+              // register — the value is already there, no lw needed.
+              // Just write through to VRegHome for cross-block safety.
+              storeReg(dstIt->second, vregOffset(inst.operands[0].vregId()));
+              break;
+            }
+          }
+        }
+
         loadReg("t2", object ? object->offset : 0);
         storeDestination(inst.operands[0], "t2");
         break;
@@ -692,6 +721,10 @@ private:
         const auto* object = frameObject(inst.operands[0].frameSlotIndex());
         std::string src = loadOperand(inst.operands[1], "t0");
         storeReg(src, object ? object->offset : 0);
+        // Record: this slot's value is now in this VReg.
+        if (inst.operands[1].kind == MIROperandKind::VReg)
+          slotToVReg_[inst.operands[0].frameSlotIndex()] =
+              inst.operands[1].vregId().value;
         break;
       }
       case MIROpcode::LoadGlobal:
