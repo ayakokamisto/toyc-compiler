@@ -445,6 +445,317 @@ private:
   FrameLayout layout_;
   std::unordered_map<uint32_t, int32_t> vregOffsets_;
 
+  // IRSlot → VReg forwarding cache.
+  // When a StoreFrame writes to an IRSlot, record which VReg holds the value.
+  // When a subsequent LoadFrame reads the same slot, if that VReg is still in
+  // a register we skip the lw and emit a mv instead.
+  std::unordered_map<int, uint32_t> slotToVReg_;
+
+  // ── VReg register cache (L1 optimization) ────────────────────────────────
+  // 3 cache slots using t0, t1, t2.  t3 is reserved for address computation.
+  // Dirty entries are written back to stack at block boundaries / calls / ret.
+  static constexpr int kCacheSize = 5;
+  static constexpr const char* kCacheRegNames[] = {"t0", "t1", "t2", "t4", "t5"};
+
+  struct CacheSlot {
+    uint32_t vreg = ~0u;   // VRegId.value; ~0u means empty
+    int32_t offset = 0;    // stack offset for writeback
+    bool dirty = false;
+    int lastAccess = 0;
+    bool pinned = false;   // L4: never evict this slot
+  };
+  CacheSlot cache_[kCacheSize];
+  int cacheAccessCounter_ = 0;
+
+  // ── L3: Block-local VReg liveness ──────────────────────────────────────
+  // Maps VReg → last instruction index that uses it within the current block.
+  // Dead VRegs (lastUse < currentInstIndex_) are preferred for eviction and
+  // don't need writeback.
+  std::unordered_map<uint32_t, int> vregLastUse_;
+  int currentInstIndex_ = 0;
+
+  // ── L4: Loop hot-VReg pinning ──────────────────────────────────────────
+  // VRegs that appear frequently in loop bodies are pinned to their cache
+  // slots and never evicted.
+  std::unordered_set<uint32_t> pinnedVRegs_;
+
+  int cacheFindSlot(uint32_t vreg) const {
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (cache_[i].vreg == vreg) return i;
+    }
+    return -1;
+  }
+
+  bool cacheSlotFree(int slot) const { return cache_[slot].vreg == ~0u; }
+
+  int cachePickVictim() const {
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (cacheSlotFree(i)) return i;
+    }
+    // L4: never evict a pinned slot.
+    // L3: prefer dead VRegs (last use already passed) — they don't need writeback.
+    //      Among dead VRegs, pick LRU.
+    int bestDead = -1;
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (cache_[i].pinned) continue;
+      if (vregIsDead(cache_[i].vreg)) {
+        if (bestDead == -1 ||
+            cache_[i].lastAccess < cache_[bestDead].lastAccess) {
+          bestDead = i;
+        }
+      }
+    }
+    if (bestDead >= 0) return bestDead;
+
+    // No dead VRegs available (all are still live). Fall back to LRU among
+    // non-pinned entries.
+    int best = -1;
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (cache_[i].pinned) continue;
+      if (best == -1 || cache_[i].lastAccess < cache_[best].lastAccess) best = i;
+    }
+    // If all slots are pinned (shouldn't happen), evict LRU pinned as last resort.
+    if (best == -1) {
+      for (int i = 0; i < kCacheSize; ++i) {
+        if (best == -1 || cache_[i].lastAccess < cache_[best].lastAccess) best = i;
+      }
+    }
+    return best;
+  }
+
+  void cacheWriteback(int slot, bool allowRelocate = true) {
+    if (cacheSlotFree(slot)) return;
+    // L3: dead VRegs don't need writeback — no one will read them.
+    bool dead = vregIsDead(cache_[slot].vreg);
+    if (cache_[slot].dirty && !dead) {
+      int freeSlot = -1;
+      if (allowRelocate) {
+        for (int i = 0; i < kCacheSize; ++i) {
+          if (i != slot && cacheSlotFree(i)) { freeSlot = i; break; }
+        }
+      }
+      if (freeSlot >= 0) {
+        out_ << "  mv " << kCacheRegNames[freeSlot] << ", " << kCacheRegNames[slot] << "\n";
+        cache_[freeSlot] = cache_[slot];
+        cache_[freeSlot].lastAccess = cacheAccessCounter_++;
+      } else {
+        storeReg(kCacheRegNames[slot], cache_[slot].offset);
+      }
+    }
+    cache_[slot].vreg = ~0u;
+    cache_[slot].dirty = false;
+  }
+
+  void cacheFlush() {
+    // Flush everything, including pinned slots — Call/Return clobbers all regs.
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (!cacheSlotFree(i) && cache_[i].dirty) {
+        storeReg(kCacheRegNames[i], cache_[i].offset);
+      }
+      cache_[i].vreg = ~0u;
+      cache_[i].dirty = false;
+      cache_[i].pinned = false;
+    }
+    slotToVReg_.clear();
+  }
+
+  void cacheClear() {
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (!cache_[i].pinned) {
+        cache_[i].vreg = ~0u;
+        cache_[i].dirty = false;
+      }
+    }
+    slotToVReg_.clear();
+  }
+
+  // ── L3+L4 analysis ─────────────────────────────────────────────────────
+
+  // Collect VReg operands that are USES (not defs) from a MIR instruction.
+  void collectVRegUses(const MIRInstruction& inst,
+                       std::function<void(uint32_t)> callback) const {
+    auto useOp = [&](int idx) {
+      if (idx < static_cast<int>(inst.operands.size()) &&
+          inst.operands[idx].kind == MIROperandKind::VReg) {
+        callback(inst.operands[idx].vregId().value);
+      }
+    };
+    switch (inst.opcode) {
+      case MIROpcode::Move:
+      case MIROpcode::StoreFrame:
+      case MIROpcode::StoreGlobal:
+        useOp(1);
+        break;
+      case MIROpcode::Add: case MIROpcode::Sub: case MIROpcode::Xor:
+      case MIROpcode::Or: case MIROpcode::And: case MIROpcode::Sll:
+      case MIROpcode::Srl: case MIROpcode::Sra: case MIROpcode::Slt:
+      case MIROpcode::Sltu:
+        useOp(1); useOp(2);
+        break;
+      case MIROpcode::Addi: case MIROpcode::Xori: case MIROpcode::Sltiu:
+        useOp(1);
+        break;
+      case MIROpcode::BranchIfNonZero:
+        useOp(0);
+        break;
+      case MIROpcode::Call:
+        // Arguments were moved to a0-a7 before the call.
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Scan a block backwards to find the last instruction index that uses each VReg.
+  void computeBlockLiveness(const MIRBlock& block) {
+    vregLastUse_.clear();
+    for (int i = static_cast<int>(block.insts.size()) - 1; i >= 0; --i) {
+      collectVRegUses(block.insts[i], [&](uint32_t vreg) {
+        if (!vregLastUse_.contains(vreg)) vregLastUse_[vreg] = i;
+      });
+    }
+  }
+
+  // Check if a VReg is dead at the current instruction position.
+  // A VReg is dead if it has no remaining uses in this block (either not
+  // in the liveness map at all, or its last use has already passed).
+  // VRegs are block-local by construction — cross-block values go through
+  // IR slots, not VRegs.
+  bool vregIsDead(uint32_t vreg) const {
+    auto it = vregLastUse_.find(vreg);
+    if (it == vregLastUse_.end()) return true;  // not used in this block
+    return it->second < currentInstIndex_;
+  }
+
+  // Analyze loops in the function and pin hot VRegs.
+  void analyzeLoopsAndPin(const MIRFunction& func) {
+    pinnedVRegs_.clear();
+    int n = static_cast<int>(func.blocks.size());
+    if (n < 2) return;
+
+    // Find back-edges: Branch from block i to block j where j <= i.
+    for (int i = 0; i < n; ++i) {
+      const auto& insts = func.blocks[i].insts;
+      if (insts.empty()) continue;
+      const auto& last = insts.back();
+      if (last.opcode != MIROpcode::Branch) continue;
+      if (last.operands.empty() ||
+          last.operands[0].kind != MIROperandKind::BlockLabel) continue;
+      BlockId target = last.operands[0].blockLabel();
+      for (int j = 0; j <= i; ++j) {
+        if (func.blocks[j].id == target) {
+          // Back-edge i→j found. Loop is blocks j..i.
+          pinLoopVRegs(func, j, i);
+          break;
+        }
+      }
+    }
+  }
+
+  // Pin the hottest VRegs in a loop (blocks header..latch inclusive).
+  void pinLoopVRegs(const MIRFunction& func, int header, int latch) {
+    std::unordered_map<uint32_t, int> counts;
+    for (int b = header; b <= latch; ++b) {
+      for (const auto& inst : func.blocks[b].insts) {
+        collectVRegUses(inst, [&](uint32_t vreg) { counts[vreg]++; });
+      }
+      // Also count VReg defs in StoreFrame (the stored VReg is loop-carried).
+      for (const auto& inst : func.blocks[b].insts) {
+        if (inst.opcode == MIROpcode::StoreFrame &&
+            inst.operands.size() > 1 &&
+            inst.operands[1].kind == MIROperandKind::VReg) {
+          counts[inst.operands[1].vregId().value] += 2;  // bonus for being stored
+        }
+      }
+    }
+    // Pin top 3 with at least 2 uses.
+    std::vector<std::pair<uint32_t, int>> ranked(counts.begin(), counts.end());
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t k = 0; k < ranked.size() && k < 3; ++k) {
+      if (ranked[k].second >= 2) pinnedVRegs_.insert(ranked[k].first);
+    }
+  }
+
+  // Ensure a physical register is free for direct use (evict cache entry if needed).
+  void cacheEnsureFree(const std::string& reg) {
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (kCacheRegNames[i] == reg && !cacheSlotFree(i)) {
+        cacheWriteback(i);
+        return;
+      }
+    }
+  }
+
+  // Load a VReg into a cache register and return the register name.
+  std::string cacheLoadVReg(VRegId vreg) {
+    int existing = cacheFindSlot(vreg.value);
+    if (existing >= 0) {
+      cache_[existing].lastAccess = cacheAccessCounter_++;
+      return kCacheRegNames[existing];
+    }
+    int slot = cachePickVictim();
+    cacheWriteback(slot);
+    int32_t offset = vregOffset(vreg);
+    loadReg(kCacheRegNames[slot], offset);
+    cache_[slot].vreg = vreg.value;
+    cache_[slot].offset = offset;
+    cache_[slot].dirty = false;
+    cache_[slot].lastAccess = cacheAccessCounter_++;
+    cache_[slot].pinned = pinnedVRegs_.contains(vreg.value);
+    return kCacheRegNames[slot];
+  }
+
+  // Record that a VReg's value is now in srcReg (from a computation).
+  // Uses lazy writeback: marks dirty, defers stack store until eviction
+  // or function exit.  Slot promotion (t4-t6) handles cross-block IR slots,
+  // so VRegs only need intra-block liveness — no flush before branches.
+  void cacheDefineVReg(VRegId vreg, const std::string& srcReg) {
+    int32_t offset = vregOffset(vreg);
+
+    bool pin = pinnedVRegs_.contains(vreg.value);
+
+    // If this VReg is already cached in a different slot, evict the old slot.
+    int existing = cacheFindSlot(vreg.value);
+    if (existing >= 0) {
+      std::string cachedReg = kCacheRegNames[existing];
+      if (srcReg != cachedReg) {
+        out_ << "  mv " << cachedReg << ", " << srcReg << "\n";
+      }
+      cache_[existing].dirty = true;
+      cache_[existing].lastAccess = cacheAccessCounter_++;
+      cache_[existing].pinned = pin;
+      return;
+    }
+
+    // Determine which slot the source register maps to.
+    int srcSlot = -1;
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (kCacheRegNames[i] == srcReg) { srcSlot = i; break; }
+    }
+
+    if (srcSlot >= 0) {
+      // srcReg is a cache register. Ensure it's free for this VReg.
+      cacheWriteback(srcSlot);
+      cache_[srcSlot].vreg = vreg.value;
+      cache_[srcSlot].offset = offset;
+      cache_[srcSlot].dirty = true;
+      cache_[srcSlot].lastAccess = cacheAccessCounter_++;
+      cache_[srcSlot].pinned = pin;
+    } else {
+      // srcReg is not a cache register (e.g., "a0" from call return, or "t3").
+      // Pick a free slot, evict if needed, and mv into it.
+      int slot = cachePickVictim();
+      cacheWriteback(slot);
+      out_ << "  mv " << kCacheRegNames[slot] << ", " << srcReg << "\n";
+      cache_[slot].vreg = vreg.value;
+      cache_[slot].offset = offset;
+      cache_[slot].dirty = true;
+      cache_[slot].lastAccess = cacheAccessCounter_++;
+      cache_[slot].pinned = pin;
+    }
+  }
+
   std::string labelForGlobal(GlobalId id) const {
     for (const auto& global : module_.globals) {
       if (global.id == id && global.name.rfind(".Ltoyc.", 0) == 0) return global.name;
@@ -471,6 +782,11 @@ private:
       }
     }
 
+    cacheClear();
+
+    // L4: analyze loops and pin hot VRegs before emitting any blocks.
+    analyzeLoopsAndPin(func);
+
     out_ << "\n";
     if (func.name == "main") {
       out_ << ".globl main\n";
@@ -485,8 +801,12 @@ private:
 
     for (const auto& block : func.blocks) {
       out_ << block.label << ":\n";
+      // L3: pre-scan this block for VReg liveness.
+      computeBlockLiveness(block);
+      currentInstIndex_ = 0;
       for (const auto& inst : block.insts) {
         emitInstruction(inst);
+        ++currentInstIndex_;
       }
     }
   }
@@ -541,11 +861,11 @@ private:
   std::string loadOperand(const MIROperand& operand, const std::string& scratch) {
     switch (operand.kind) {
       case MIROperandKind::VReg:
-        loadReg(scratch, vregOffset(operand.vregId()));
-        return scratch;
+        return cacheLoadVReg(operand.vregId());
       case MIROperandKind::PhysReg:
         return std::string(physRegName(operand.physReg()));
       case MIROperandKind::Immediate:
+        cacheEnsureFree(scratch);
         out_ << "  li " << scratch << ", " << operand.imm() << "\n";
         return scratch;
       default:
@@ -555,7 +875,7 @@ private:
 
   void storeDestination(const MIROperand& dst, const std::string& reg) {
     if (dst.kind == MIROperandKind::VReg) {
-      storeReg(reg, vregOffset(dst.vregId()));
+      cacheDefineVReg(dst.vregId(), reg);
       return;
     }
     if (dst.kind == MIROperandKind::PhysReg) {
@@ -586,8 +906,8 @@ private:
         break;
       case MIROpcode::LoadImm:
       case MIROpcode::Li:
-        out_ << "  li t2, " << inst.operands[1].imm() << "\n";
-        storeDestination(inst.operands[0], "t2");
+        out_ << "  li t3, " << inst.operands[1].imm() << "\n";
+        storeDestination(inst.operands[0], "t3");
         break;
       case MIROpcode::Move: {
         std::string src = loadOperand(inst.operands[1], "t0");
@@ -596,20 +916,53 @@ private:
       }
       case MIROpcode::LoadFrame: {
         const auto* object = frameObject(inst.operands[1].frameSlotIndex());
-        loadReg("t2", object ? object->offset : 0);
-        storeDestination(inst.operands[0], "t2");
+        int foIndex = inst.operands[1].frameSlotIndex();
+
+        // Check if this slot's value is still in a register from a prior StoreFrame.
+        auto slotIt = slotToVReg_.find(foIndex);
+        if (slotIt != slotToVReg_.end()) {
+          int cachedSlot = cacheFindSlot(slotIt->second);
+          if (cachedSlot >= 0) {
+            // Value still in register.  Pick a DIFFERENT free register and mv
+            // into it, so the old and new VRegs don't alias the same register.
+            std::string srcReg = kCacheRegNames[cachedSlot];
+            int dstSlot = -1;
+            for (int i = 0; i < kCacheSize; ++i) {
+              if (i != cachedSlot && cacheSlotFree(i)) { dstSlot = i; break; }
+            }
+            if (dstSlot >= 0) {
+              out_ << "  mv " << kCacheRegNames[dstSlot] << ", " << srcReg << "\n";
+              storeDestination(inst.operands[0], kCacheRegNames[dstSlot]);
+            } else {
+              // No free slot — reuse srcReg (fallback, correct for same-value copy).
+              cache_[cachedSlot].lastAccess = cacheAccessCounter_++;
+              storeDestination(inst.operands[0], srcReg);
+            }
+            break;
+          }
+        }
+
+        loadReg("t3", object ? object->offset : 0);
+        storeDestination(inst.operands[0], "t3");
         break;
       }
       case MIROpcode::StoreFrame: {
         const auto* object = frameObject(inst.operands[0].frameSlotIndex());
+        int foIndex = inst.operands[0].frameSlotIndex();
         std::string src = loadOperand(inst.operands[1], "t0");
+
+        // Record that this IRSlot's value now lives in the source VReg.
+        if (inst.operands[1].kind == MIROperandKind::VReg) {
+          slotToVReg_[foIndex] = inst.operands[1].vregId().value;
+        }
+
         storeReg(src, object ? object->offset : 0);
         break;
       }
       case MIROpcode::LoadGlobal:
         out_ << "  la t3, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
-        out_ << "  lw t2, 0(t3)\n";
-        storeDestination(inst.operands[0], "t2");
+        out_ << "  lw t3, 0(t3)\n";
+        storeDestination(inst.operands[0], "t3");
         break;
       case MIROpcode::StoreGlobal: {
         std::string src = loadOperand(inst.operands[1], "t0");
@@ -635,44 +988,76 @@ private:
         emitImmediate(inst);
         break;
       case MIROpcode::Call:
+        // Call clobbers t0-t6, a0-a7. Flush dirty entries, then clear.
+        cacheFlush();
         out_ << "  call " << inst.comment << "\n";
+        cacheClear();
         break;
       case MIROpcode::Return:
+        // Write back dirty VRegs before function exit.
+        cacheFlush();
         emitReturn();
         break;
       case MIROpcode::Branch:
         out_ << "  j " << blockLabel(*func_, inst.operands[0].blockLabel()) << "\n";
         break;
-      case MIROpcode::BranchIfNonZero:
-        loadOperand(inst.operands[0], "t0");
-        out_ << "  bnez t0, " << blockLabel(*func_, inst.operands[1].blockLabel()) << "\n";
+      case MIROpcode::BranchIfNonZero: {
+        std::string cond = loadOperand(inst.operands[0], "t0");
+        out_ << "  bnez " << cond << ", " << blockLabel(*func_, inst.operands[1].blockLabel()) << "\n";
         break;
+      }
       case MIROpcode::La:
-        out_ << "  la t2, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
-        storeDestination(inst.operands[0], "t2");
+        out_ << "  la t3, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
+        storeDestination(inst.operands[0], "t3");
         break;
     }
+  }
+
+  // Pick the best result register for a binary/immediate operation.
+  // Avoids clobbering a live VReg in t2 when a free/dead slot exists.
+  std::string pickResultReg(const std::string& lhs, const std::string& rhs) {
+    auto used = [&](const std::string& r) { return r == lhs || r == rhs; };
+    // 1. Free slot whose register is not an operand.
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (cacheSlotFree(i) && !used(kCacheRegNames[i])) return kCacheRegNames[i];
+    }
+    // 2. Dead VReg slot (can be evicted without writeback).
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (!used(kCacheRegNames[i]) && vregIsDead(cache_[i].vreg)) return kCacheRegNames[i];
+    }
+    // 3. Any unused register (live VReg will be written back).
+    for (int i = 0; i < kCacheSize; ++i) {
+      if (!used(kCacheRegNames[i])) return kCacheRegNames[i];
+    }
+    // 4. All cache regs are operands.  t2 works (RV32 allows dst == src).
+    return "t2";
   }
 
   void emitBinary(const MIRInstruction& inst) {
     std::string lhs = loadOperand(inst.operands[1], "t0");
     std::string rhs = loadOperand(inst.operands[2], "t1");
-    out_ << "  " << mirOpcodeName(inst.opcode) << " t2, " << lhs << ", " << rhs << "\n";
-    storeDestination(inst.operands[0], "t2");
+    std::string dst = pickResultReg(lhs, rhs);
+    cacheEnsureFree(dst);
+    out_ << "  " << mirOpcodeName(inst.opcode) << " " << dst << ", " << lhs << ", " << rhs << "\n";
+    storeDestination(inst.operands[0], dst);
   }
 
   void emitImmediate(const MIRInstruction& inst) {
     std::string lhs = loadOperand(inst.operands[1], "t0");
     int32_t imm = inst.operands[2].imm();
+    std::string dst = pickResultReg(lhs, "");  // rhs is not a register for I-type
     if (fitsI12(imm)) {
-      out_ << "  " << mirOpcodeName(inst.opcode) << " t2, " << lhs << ", " << imm << "\n";
+      cacheEnsureFree(dst);
+      out_ << "  " << mirOpcodeName(inst.opcode) << " " << dst << ", " << lhs << ", " << imm << "\n";
     } else {
-      out_ << "  li t1, " << imm << "\n";
+      // Use t3 for the large immediate to avoid clobbering a cached register.
+      out_ << "  li t3, " << imm << "\n";
       const char* op = inst.opcode == MIROpcode::Addi ? "add" :
                        inst.opcode == MIROpcode::Xori ? "xor" : "sltu";
-      out_ << "  " << op << " t2, " << lhs << ", t1\n";
+      cacheEnsureFree(dst);
+      out_ << "  " << op << " " << dst << ", " << lhs << ", t3\n";
     }
-    storeDestination(inst.operands[0], "t2");
+    storeDestination(inst.operands[0], dst);
   }
 
   void emitReturn() {
@@ -799,8 +1184,14 @@ private:
 std::string emitAssembly(const AllocatedMachineModule& module, bool optimize) {
   auto assembly = Emitter(module).emit();
   if (optimize) {
-    assembly = promoteLeafStackSlots(std::move(assembly));
-    assembly = peephole(std::move(assembly));
+    // L1 VReg cache (in Emitter) handles VReg-to-VReg forwarding using t0-t2.
+    // Text-level peephole passes are disabled for now — they operate on
+    // assembly text without awareness of the VReg cache state and can
+    // introduce incorrect register reuse when combined with lazy writeback.
+    // TODO: re-enable peephole after making it cache-aware, or replace with
+    // MIR-level passes (L2/L3/L4 in the backend optimization plan).
+    (void)promoteLeafStackSlots;
+    (void)peephole;
   }
   return assembly;
 }
