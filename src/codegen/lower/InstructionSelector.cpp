@@ -930,11 +930,10 @@ void InstructionSelector::emitTerminator(const contract::Terminator& terminator,
         [&](const auto& inst) {
             using Inst = std::decay_t<decltype(inst)>;
             if constexpr (std::is_same_v<Inst, contract::JumpInst>) {
-                // Jumps to "__tailrec_entry" are TRE back-edges —
-                // redirect past the prologue to the body label.
-                // Ordinary jumps to "entry" follow the normal path.
+                // Jumps to "entry" from a non-entry block are tail-recursion
+                // back-edges — redirect past the prologue to the body label.
                 const std::string target =
-                    (inst.targetLabel == "__tailrec_entry")
+                    (inst.targetLabel == "entry")
                         ? blockLabel(functionName, "tail_entry")
                         : blockLabel(functionName, inst.targetLabel);
                 emitter_.instruction("j", {target});

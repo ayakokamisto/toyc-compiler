@@ -648,10 +648,11 @@ bool eliminateTailRecursion(c::IRFunction& function) {
                 insts[rt.index]);
         }
 
-        // Replace the return terminator with a jump past the prologue.
-        // Use a dedicated label so only TRE-rewritten blocks trigger the
-        // tail_entry redirect — ordinary jumps to "entry" are unaffected.
-        block.terminator = c::JumpInst{"__tailrec_entry"};
+        // Replace the return terminator with a jump to the entry block.
+        // VRegAnalysis & DCE can track liveness across this successor edge.
+        // The backend redirects "entry" jumps past the prologue (to the
+        // tail_entry label) automatically.
+        block.terminator = c::JumpInst{"entry"};
         changed = true;
     }
 
@@ -714,6 +715,13 @@ bool hoistLoopInvariants(c::IRFunction& function) {
 
     for (const BackEdge& be : backEdges) {
         if (processedHeaders.count(be.to) != 0) {
+            continue;
+        }
+        // TRE creates back-edges to "entry"; the emitter already routes
+        // those through tail_entry.  Creating a preheader here would
+        // produce a backwards jump (preheader sits before entry but its
+        // jump to "entry" is redirected to tail_entry, which is above).
+        if (function.basicBlocks[be.to].label == "entry") {
             continue;
         }
         processedHeaders.insert(be.to);
