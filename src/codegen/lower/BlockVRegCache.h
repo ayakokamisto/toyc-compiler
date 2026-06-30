@@ -17,14 +17,8 @@ namespace toyc::codegen {
 // Tracks all allocated registers (t2–t6, s1–s11, plus scratch) so the
 // selector can recognise when a value is already register-resident and
 // avoid redundant loads.
-//
-// An optional onClobber callback is invoked on every clobberRegister so
-// that the owning InstructionSelector can synchronise its global-address
-// cache with the vreg cache.
 class BlockVRegCache {
 public:
-    using ClobberCallback = void (*)(void* ctx, std::string_view reg);
-
     void invalidateAll() {
         vregToReg_.clear();
         regToVreg_.clear();
@@ -32,18 +26,12 @@ public:
 
     void forgetVReg(std::string_view vreg) { dropVReg(vreg); }
 
-    void setClobberCallback(ClobberCallback cb, void* ctx) {
-        onClobber_ = cb;
-        clobberCtx_ = ctx;
-    }
-
     void clobberRegister(std::string_view reg) {
         const auto it = regToVreg_.find(std::string(reg));
         if (it != regToVreg_.end()) {
             vregToReg_.erase(it->second);
             regToVreg_.erase(it);
         }
-        if (onClobber_) onClobber_(clobberCtx_, reg);
     }
 
     void load(CallingConvention& abi, RiscvEmitter& emitter,
@@ -74,8 +62,6 @@ public:
 private:
     std::unordered_map<std::string, std::string> vregToReg_;
     std::unordered_map<std::string, std::string> regToVreg_;
-    ClobberCallback onClobber_ = nullptr;
-    void* clobberCtx_ = nullptr;
 
     [[nodiscard]] std::optional<std::string_view> findHolder(std::string_view vreg) const {
         const auto it = vregToReg_.find(std::string(vreg));

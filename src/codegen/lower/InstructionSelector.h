@@ -34,10 +34,6 @@ public:
                                                  const contract::BranchInst& branch,
                                                  std::string_view functionName);
 
-    // Invalidate cached global addresses that use the given register.
-    // Public so BlockVRegCache's clobber callback can reach it.
-    void invalidateGlobalAddr(std::string_view reg);
-
 private:
     void loadVReg(std::string_view reg, std::string_view vreg);
     void storeVReg(std::string_view vreg, std::string_view reg);
@@ -103,6 +99,7 @@ private:
     // instead of emitting a second `la`.  Entries are invalidated when the
     // address register is clobbered or a call occurs.
     std::unordered_map<std::string, std::string> globalAddrReg_;
+    void invalidateGlobalAddr(std::string_view reg);
 };
 
 } // namespace toyc::codegen
