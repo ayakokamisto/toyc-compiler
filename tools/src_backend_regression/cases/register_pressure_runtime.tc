@@ -1,0 +1,22 @@
+// EXPECT: 142
+int bump(int x) {
+  return x + 1;
+}
+
+int main() {
+  int a = 1;
+  a = 2;
+  a = 3;
+  int b = 4;
+  b = 5;
+  b = 6;
+  int c = 7;
+  c = 8;
+  c = 9;
+  int d = 10;
+  d = 11;
+  d = 12;
+  int e = bump(a + b);
+  int f = bump(c + d);
+  return a + b + c + d + e + f + 80;
+}

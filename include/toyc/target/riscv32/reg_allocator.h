@@ -1,8 +1,7 @@
 #pragma once
 /// Linear-scan register allocator for RV32I.
 ///
-/// Replaces SpillAllAllocator.  Assigns physical registers to profitable
-/// VRegs; the rest spill to stack as before.
+/// Assigns VRegs to s1-s11 and leaves the rest on VRegHome stack slots.
 
 #include "toyc/mir/mir.h"
 #include "toyc/target/riscv32/spill_all_allocator.h"

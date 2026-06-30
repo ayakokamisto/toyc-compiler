@@ -14,6 +14,7 @@
 #include "toyc/mir/mir.h"
 #include "toyc/mir/mir_copy_prop.h"
 #include "toyc/mir/mir_dead_vreg.h"
+#include "toyc/mir/mir_dead_writeback.h"
 #include "toyc/mir/mir_slot_forwarding.h"
 #include "toyc/mir/verifier.h"
 #include "toyc/passes/dce.h"
@@ -34,6 +35,7 @@
 
 #include <iostream>
 #include <exception>
+#include <cstdlib>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -404,8 +406,25 @@ int main(int argc, char* argv[]) {
     for (auto& func : mirModule->functions) {
       (void)toyc::cleanupDeadVRegs(func);
     }
+    toyc::BlockLocalDeadWritebackStats deadWritebackStats;
+    if (std::getenv("TOYC_DISABLE_BLOCK_LOCAL_DEAD_WRITEBACK") == nullptr) {
+      (void)toyc::eliminateBlockLocalDeadWritebacks(*mirModule, &deadWritebackStats);
+    }
+    if (std::getenv("TOYC_MIR_DEAD_WRITEBACK_STATS") != nullptr) {
+      std::cerr << "dead_writebacks_removed="
+                << deadWritebackStats.deadWritebacksRemoved << "\n";
+      std::cerr << "vreg_home_writebacks_suppressed="
+                << deadWritebackStats.vregHomeWritebacksSuppressed << "\n";
+      for (const auto& removal : deadWritebackStats.removals) {
+        std::cerr << "dead_writeback function=" << removal.functionName
+                  << " block=" << removal.blockLabel
+                  << " slot=" << removal.frameSlot
+                  << " removed_index=" << removal.removedIndex
+                  << " covering_index=" << removal.coveringIndex << "\n";
+      }
+    }
 
-    toyc::riscv32::RegisterAllocator allocator(opts.optimize);
+    toyc::riscv32::RegisterAllocator allocator(true);
     auto allocated = allocator.allocate(std::move(*mirModule));
     std::cout << toyc::riscv32::emitAssembly(allocated, opts.optimize);
   }

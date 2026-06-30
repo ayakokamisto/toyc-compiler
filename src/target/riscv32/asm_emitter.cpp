@@ -445,27 +445,16 @@ private:
   FrameLayout layout_;
   std::unordered_map<uint32_t, int32_t> vregOffsets_;
   const std::unordered_map<uint32_t, std::string>* regAssignment_ = nullptr;
-
-  // ── IRSlot forwarding cache ──────────────────────────────────────
-  // Maps IRSlot frame index → VReg that last stored to it.
-  // When a LoadFrame hits, if the stored VReg is still in a register
-  // (via regAssignment), skip the lw and use the register directly.
   std::unordered_map<int, uint32_t> slotToVReg_;
 
-  // ── Block-local VReg cache (t0/t1) ──────────────────────────────────
-  // Tracks which VRegs are currently in t0 and t1.  Eliminates
-  // redundant lw when a value was just stored to its VRegHome.
-  // Invalidated at block boundaries and after calls — strictly block-local.
+  // Block-local caches. They are invalidated at block boundaries and calls.
   uint32_t cacheT0_ = ~0u;  // VRegId.value in t0, ~0u = none
   uint32_t cacheT1_ = ~0u;  // VRegId.value in t1, ~0u = none
 
   void cacheClear() {
     cacheT0_ = ~0u;
     cacheT1_ = ~0u;
-    // slotToVReg_ intentionally NOT cleared — it carries StoreFrame→LoadFrame
-    // mappings across block boundaries.  Safety is ensured by checking that
-    // both VRegs share the same assigned physical register (same union-find
-    // equivalence class) before forwarding.
+    slotToVReg_.clear();
   }
 
   void cacheInvalidateReg(const std::string& reg) {
@@ -524,13 +513,8 @@ private:
       const auto* ra = savedRaObject(func);
       if (ra != nullptr) storeReg("ra", ra->offset);
     }
-    // Save callee-saved registers that were allocated.
-    for (const auto& fo : func.frameObjects) {
-      if (fo.kind == FrameObjectKind::SavedReturnAddress && fo.size == 4) {
-        // Check if this is actually a callee-saved reg save slot.
-        // FrameLayout assigns offsets starting from 0.  We save/restore
-        // in the prologue/epilogue based on the frame object list.
-      }
+    for (const auto* saved : savedCalleeObjects(func)) {
+      storeReg(saved->physReg, saved->offset);
     }
     cacheClear();
     spillIncomingParameters(func);
@@ -542,6 +526,18 @@ private:
         emitInstruction(inst);
       }
     }
+
+    out_ << epilogueLabel(func) << ":\n";
+    auto savedRegs = savedCalleeObjects(func);
+    for (auto it = savedRegs.rbegin(); it != savedRegs.rend(); ++it) {
+      loadReg((*it)->physReg, (*it)->offset);
+    }
+    if (func.hasCall) {
+      const auto* ra = savedRaObject(func);
+      if (ra != nullptr) loadReg("ra", ra->offset);
+    }
+    adjustSp(layout_.totalSize);
+    out_ << "  ret\n";
   }
 
   const FrameObject* frameObject(int index) const {
@@ -554,6 +550,21 @@ private:
       if (object.kind == FrameObjectKind::SavedReturnAddress) return &object;
     }
     return nullptr;
+  }
+
+  std::vector<const FrameObject*> savedCalleeObjects(const MIRFunction& func) const {
+    std::vector<const FrameObject*> saved;
+    for (const auto& object : func.frameObjects) {
+      if (object.kind == FrameObjectKind::SavedCalleeSaved) saved.push_back(&object);
+    }
+    std::sort(saved.begin(), saved.end(), [](const auto* lhs, const auto* rhs) {
+      return lhs->offset < rhs->offset;
+    });
+    return saved;
+  }
+
+  std::string epilogueLabel(const MIRFunction& func) const {
+    return functionLabel(func) + ".epilogue";
   }
 
   int32_t vregOffset(VRegId id) const {
@@ -617,9 +628,19 @@ private:
     }
   }
 
-  void storeDestination(const MIROperand& dst, const std::string& reg) {
+  bool canSuppressHomeStore(const MIROperand& dst, bool suppressHomeStore) const {
+    if (!suppressHomeStore || dst.kind != MIROperandKind::VReg || !regAssignment_) {
+      return false;
+    }
+    return regAssignment_->contains(dst.vregId().value);
+  }
+
+  void storeDestination(const MIROperand& dst, const std::string& reg,
+                        bool suppressHomeStore = false) {
     if (dst.kind == MIROperandKind::VReg) {
-      storeReg(reg, vregOffset(dst.vregId()));
+      if (!canSuppressHomeStore(dst, suppressHomeStore)) {
+        storeReg(reg, vregOffset(dst.vregId()));
+      }
       // If assigned a physical register, also mv into it.
       if (regAssignment_) {
         auto it = regAssignment_->find(dst.vregId().value);
@@ -641,12 +662,22 @@ private:
       "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"
     };
     for (size_t i = 0; i < func.parameterVRegs.size(); ++i) {
+      auto parameterVReg = func.parameterVRegs[i];
       int32_t dst = vregOffset(func.parameterVRegs[i]);
+      std::string sourceReg;
       if (i < 8) {
-        storeReg(argRegs[i], dst);
+        sourceReg = argRegs[i];
+        storeReg(sourceReg, dst);
       } else {
         loadReg("t0", layout_.incomingArgOffset(static_cast<int>(i)));
         storeReg("t0", dst);
+        sourceReg = "t0";
+      }
+      if (regAssignment_) {
+        auto it = regAssignment_->find(parameterVReg.value);
+        if (it != regAssignment_->end() && it->second != sourceReg) {
+          out_ << "  mv " << it->second << ", " << sourceReg << "\n";
+        }
       }
     }
   }
@@ -665,10 +696,12 @@ private:
         }
         if (!dstReg.empty()) {
           out_ << "  li " << dstReg << ", " << inst.operands[1].imm() << "\n";
-          storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+          if (!inst.suppressVRegHomeStore) {
+            storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+          }
         } else {
           out_ << "  li t2, " << inst.operands[1].imm() << "\n";
-          storeDestination(inst.operands[0], "t2");
+          storeDestination(inst.operands[0], "t2", inst.suppressVRegHomeStore);
         }
         break;
       }
@@ -683,12 +716,14 @@ private:
           if (it != regAssignment_->end()) srcReg = it->second;
         }
         if (!dstReg.empty() && !srcReg.empty()) {
-          // Both have physical registers — pure mv.
+          // Both have physical registers 閳?pure mv.
           out_ << "  mv " << dstReg << ", " << srcReg << "\n";
-          storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+          if (!inst.suppressVRegHomeStore) {
+            storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+          }
         } else {
           std::string src = loadOperand(inst.operands[1], "t0");
-          storeDestination(inst.operands[0], src);
+          storeDestination(inst.operands[0], src, inst.suppressVRegHomeStore);
         }
         break;
       }
@@ -705,16 +740,18 @@ private:
             if (dstIt != regAssignment_->end() && srcIt != regAssignment_->end() &&
                 dstIt->second == srcIt->second) {
               // Both LoadFrame dst and StoreFrame src share the same physical
-              // register — the value is already there, no lw needed.
+              // register 閳?the value is already there, no lw needed.
               // Just write through to VRegHome for cross-block safety.
-              storeReg(dstIt->second, vregOffset(inst.operands[0].vregId()));
+              if (!inst.suppressVRegHomeStore) {
+                storeReg(dstIt->second, vregOffset(inst.operands[0].vregId()));
+              }
               break;
             }
           }
         }
 
         loadReg("t2", object ? object->offset : 0);
-        storeDestination(inst.operands[0], "t2");
+        storeDestination(inst.operands[0], "t2", inst.suppressVRegHomeStore);
         break;
       }
       case MIROpcode::StoreFrame: {
@@ -730,7 +767,7 @@ private:
       case MIROpcode::LoadGlobal:
         out_ << "  la t3, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
         out_ << "  lw t2, 0(t3)\n";
-        storeDestination(inst.operands[0], "t2");
+        storeDestination(inst.operands[0], "t2", inst.suppressVRegHomeStore);
         break;
       case MIROpcode::StoreGlobal: {
         std::string src = loadOperand(inst.operands[1], "t0");
@@ -773,7 +810,7 @@ private:
       }
       case MIROpcode::La:
         out_ << "  la t2, " << labelForGlobal(inst.operands[1].globalId()) << "\n";
-        storeDestination(inst.operands[0], "t2");
+        storeDestination(inst.operands[0], "t2", inst.suppressVRegHomeStore);
         break;
     }
   }
@@ -800,7 +837,9 @@ private:
       out_ << "  " << mirOpcodeName(inst.opcode) << " "
            << dstReg << ", " << lhsReg << ", " << rhsReg << "\n";
       // Also write through to VRegHome for cross-block safety.
-      storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+      if (!inst.suppressVRegHomeStore) {
+        storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+      }
       return;
     }
 
@@ -808,7 +847,7 @@ private:
     std::string lhs = loadOperand(inst.operands[1], "t0");
     std::string rhs = loadOperand(inst.operands[2], "t1");
     out_ << "  " << mirOpcodeName(inst.opcode) << " t2, " << lhs << ", " << rhs << "\n";
-    storeDestination(inst.operands[0], "t2");
+    storeDestination(inst.operands[0], "t2", inst.suppressVRegHomeStore);
   }
 
   void emitImmediate(const MIRInstruction& inst) {
@@ -828,7 +867,9 @@ private:
       // Pure register-immediate operation.
       out_ << "  " << mirOpcodeName(inst.opcode) << " "
            << dstReg << ", " << lhsReg << ", " << imm << "\n";
-      storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+      if (!inst.suppressVRegHomeStore) {
+        storeReg(dstReg, vregOffset(inst.operands[0].vregId()));
+      }
       return;
     }
 
@@ -842,16 +883,11 @@ private:
                        inst.opcode == MIROpcode::Xori ? "xor" : "sltu";
       out_ << "  " << op << " t2, " << lhs << ", t3\n";
     }
-    storeDestination(inst.operands[0], "t2");
+    storeDestination(inst.operands[0], "t2", inst.suppressVRegHomeStore);
   }
 
   void emitReturn() {
-    if (func_->hasCall) {
-      const auto* ra = savedRaObject(*func_);
-      if (ra != nullptr) loadReg("ra", ra->offset);
-    }
-    adjustSp(layout_.totalSize);
-    out_ << "  ret\n";
+    out_ << "  j " << epilogueLabel(*func_) << "\n";
   }
 
   bool textUses(const std::string& needle) const {

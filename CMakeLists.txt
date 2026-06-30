@@ -103,6 +103,7 @@ toyc_add_library(toyc_mir
   src/mir/mir.cpp
   src/mir/mir_slot_forwarding.cpp
   src/mir/mir_dead_vreg.cpp
+  src/mir/mir_dead_writeback.cpp
   src/mir/mir_copy_prop.cpp
   src/mir/mir_liveness.cpp
 )
@@ -219,6 +220,7 @@ if(TOYC_BUILD_TESTS)
 
   add_executable(toyc-mir-tests
     tests/mir/mir_basic_test.cpp
+    tests/mir/mir_dead_writeback_test.cpp
   )
   target_link_libraries(toyc-mir-tests PRIVATE
     GTest::gtest_main

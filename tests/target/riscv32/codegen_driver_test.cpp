@@ -8,10 +8,12 @@
 #include "toyc/sema/semantic_analyzer.h"
 #include "toyc/target/riscv32/asm_emitter.h"
 #include "toyc/target/riscv32/instruction_selector.h"
+#include "toyc/target/riscv32/reg_allocator.h"
 #include "toyc/target/riscv32/spill_all_allocator.h"
 
 #include <gtest/gtest.h>
 #include <regex>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -35,6 +37,28 @@ static std::string compileToAssembly(const std::string& source) {
   EXPECT_TRUE(mir.has_value());
   EXPECT_TRUE(verifyMIR(*mir).ok);
   riscv32::SpillAllAllocator allocator;
+  auto allocated = allocator.allocate(std::move(*mir));
+  return riscv32::emitAssembly(allocated);
+}
+
+static std::string compileToAssemblyWithRegisterAllocator(const std::string& source) {
+  DiagnosticEngine diag;
+  Lexer lexer(source, diag);
+  auto tokens = lexer.tokenize();
+  Parser parser(tokens, diag);
+  auto ast = parser.parse();
+  SemanticAnalyzer sema(diag);
+  auto model = sema.analyze(*ast);
+  ASTToIRLowering lowering(*model, diag);
+  auto ir = lowering.lower(*ast);
+  EXPECT_TRUE(ir.has_value());
+  rebuildCFG(*ir);
+  EXPECT_TRUE(verifyModule(*ir).ok);
+  RV32InstructionSelector selector(diag);
+  auto mir = selector.lower(*ir);
+  EXPECT_TRUE(mir.has_value());
+  EXPECT_TRUE(verifyMIR(*mir).ok);
+  riscv32::RegisterAllocator allocator(true);
   auto allocated = allocator.allocate(std::move(*mir));
   return riscv32::emitAssembly(allocated);
 }
@@ -148,6 +172,102 @@ TEST(CodegenDriverTest, P5EndToEndProgramsGenerateAssemblyWithCorrectedExpectati
     EXPECT_NE(asmText.find("main:"), std::string::npos);
     EXPECT_GE(testCase.expectedExitCode, 0);
     EXPECT_LE(testCase.expectedExitCode, 255);
+  }
+}
+
+static int countRegexMatches(const std::string& text, const std::regex& regex) {
+  return static_cast<int>(std::distance(std::sregex_iterator(text.begin(), text.end(), regex),
+                                        std::sregex_iterator()));
+}
+
+static void expectSavedAndRestoredIfUsed(const std::string& asmText, const std::string& reg) {
+  std::regex useRegex("\\b" + reg + "\\b");
+  if (!std::regex_search(asmText, useRegex)) return;
+  std::regex saveRegex("(^|\\n)\\s*sw\\s+" + reg + ",");
+  std::regex restoreRegex("(^|\\n)\\s*lw\\s+" + reg + ",");
+  EXPECT_TRUE(std::regex_search(asmText, saveRegex)) << "missing save for " << reg;
+  EXPECT_TRUE(std::regex_search(asmText, restoreRegex)) << "missing restore for " << reg;
+}
+
+static void expectReferencedLabelsDefined(const std::string& asmText);
+
+TEST(CodegenDriverTest, LinearScanSavesCalleeSavedRegistersInLeafAndNonLeaf) {
+  auto asmText = compileToAssemblyWithRegisterAllocator(R"(
+int leaf(int a, int b, int c) {
+  int x0 = a + b;
+  int x1 = x0 + c;
+  int x2 = x1 + a;
+  int x3 = x2 + b;
+  return x3 + c;
+}
+int main() {
+  int base = 3;
+  int y = leaf(base, base + 1, base + 2);
+  return base + y;
+}
+)");
+  for (const auto* reg : {"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11"}) {
+    expectSavedAndRestoredIfUsed(asmText, reg);
+  }
+  EXPECT_NE(asmText.find("sw ra"), std::string::npos);
+  EXPECT_NE(asmText.find("lw ra"), std::string::npos);
+}
+
+TEST(CodegenDriverTest, CallerSavedRegistersAreOnlyScratchAroundCalls) {
+  auto asmText = compileToAssemblyWithRegisterAllocator(R"(
+int touch(int x) { return x + 7; }
+int main() {
+  int a = 11;
+  int b = touch(a);
+  int c = a + b;
+  return c + a;
+}
+)");
+  EXPECT_EQ(asmText.find(" t4"), std::string::npos);
+  EXPECT_EQ(asmText.find(" t5"), std::string::npos);
+  EXPECT_EQ(asmText.find(" t6"), std::string::npos);
+  EXPECT_EQ(asmText.find(" a2"), std::string::npos);
+  EXPECT_EQ(asmText.find(" a3"), std::string::npos);
+  EXPECT_EQ(asmText.find(" a4"), std::string::npos);
+  EXPECT_EQ(asmText.find(" a5"), std::string::npos);
+}
+
+TEST(CodegenDriverTest, ReturnsUseUnifiedEpilogue) {
+  auto asmText = compileToAssemblyWithRegisterAllocator(R"(
+int main() {
+  int x = 3;
+  if (x) { return x + 1; }
+  return x + 2;
+}
+)");
+  EXPECT_NE(asmText.find("main.epilogue:"), std::string::npos);
+  EXPECT_GE(countRegexMatches(asmText, std::regex(R"(j main\.epilogue)")), 2);
+  EXPECT_EQ(countRegexMatches(asmText, std::regex(R"((^|\n)\s*ret\s*(\n|$))")), 1);
+}
+
+TEST(CodegenDriverTest, AbiRegressionProgramsGenerateAssembly) {
+  const std::vector<EndToEndCase> cases = {
+      {"leaf_s_registers", "int main(){ int a=1; int b=2; int c=3; int d=4; return a+b+c+d; }", 10},
+      {"nonleaf_s_registers", "int f(int x){return x+1;} int main(){int a=4; int b=f(a); return a+b;}", 9},
+      {"caller_uses_local_after_call", "int f(int x){return x+5;} int main(){int a=7; int b=f(a); return a+b;}", 19},
+      {"loop_variable_across_call", R"(
+int one(int x){return x+1;}
+int main(){int i=0; int sum=0; while(i<4){sum=sum+one(i); i=i+1;} return sum;}
+)",
+       10},
+      {"multi_level_calls", "int h(int x){return x+1;} int g(int x){return h(x)+2;} int main(){return g(5)+3;}", 11},
+      {"recursive_call", "int fact(int n){if(n<=1){return 1;} return n*fact(n-1);} int main(){return fact(5);}", 120},
+      {"if_else_merge", "int main(){int x=3; int y=0; if(x<4){y=10;} else {y=20;} return y+x;}", 13},
+      {"while_backedge", "int main(){int i=0; int acc=0; while(i<5){acc=acc+i; i=i+1;} return acc;}", 10},
+  };
+
+  for (const auto& testCase : cases) {
+    SCOPED_TRACE(testCase.name);
+    auto asmText = compileToAssemblyWithRegisterAllocator(testCase.source);
+    EXPECT_NE(asmText.find("main:"), std::string::npos);
+    EXPECT_GE(testCase.expectedExitCode, 0);
+    EXPECT_LE(testCase.expectedExitCode, 255);
+    expectReferencedLabelsDefined(asmText);
   }
 }
 

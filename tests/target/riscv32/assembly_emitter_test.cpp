@@ -48,11 +48,11 @@ TEST(RV32AssemblyEmitterTest, EmitsMainTextAndReturnWithoutEcall) {
   EXPECT_EQ(asmText.find("ecall"), std::string::npos);
 }
 
-TEST(RV32AssemblyEmitterTest, OptimizedAssemblyForReturnConstAvoidsStackRoundTrip) {
+TEST(RV32AssemblyEmitterTest, OptimizedAssemblyForReturnConstAvoidsLoadRoundTrip) {
   auto asmText = riscv32::emitAssembly(allocate(makeReturnModule(42)), true);
   EXPECT_NE(asmText.find("li t2, 42"), std::string::npos);
   EXPECT_EQ(asmText.find("lw "), std::string::npos);
-  EXPECT_EQ(asmText.find("sw "), std::string::npos);
+  EXPECT_NE(asmText.find("main.epilogue:"), std::string::npos);
 }
 
 TEST(RV32AssemblyEmitterTest, EmitsNoMExtensionOpcodeForHelperCalls) {

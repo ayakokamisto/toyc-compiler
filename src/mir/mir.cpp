@@ -287,8 +287,18 @@ FrameLayout FrameLayout::compute(MIRFunction& func) {
     layout.savedRaSize = 4;
   }
 
-  // 5. Align to 16 bytes
-  layout.totalSize = alignUp(raOffset, 16);
+  // 5. Saved callee-saved registers.
+  int32_t calleeOffset = raOffset;
+  for (auto& fo : func.frameObjects) {
+    if (fo.kind == FrameObjectKind::SavedCalleeSaved) {
+      fo.offset = calleeOffset;
+      calleeOffset += 4;
+      layout.savedCalleeSize += 4;
+    }
+  }
+
+  // 6. Align to 16 bytes
+  layout.totalSize = alignUp(calleeOffset, 16);
 
   return layout;
 }
@@ -547,10 +557,12 @@ void dumpMIR(const MIRModule& module, std::ostream& out) {
         case FrameObjectKind::VRegHome:            out << "vreg_home"; break;
         case FrameObjectKind::OutgoingArgument:    out << "outgoing_arg"; break;
         case FrameObjectKind::SavedReturnAddress:  out << "saved_ra"; break;
+        case FrameObjectKind::SavedCalleeSaved:    out << "saved_callee"; break;
       }
       out << " size=" << fo.size << " offset=" << fo.offset;
       if (fo.irSlot.has_value()) out << " slot=" << fo.irSlot->value;
       if (fo.vregId.has_value()) out << " vreg=" << fo.vregId->value;
+      if (!fo.physReg.empty()) out << " reg=" << fo.physReg;
       if (fo.paramIndex >= 0) out << " param=" << fo.paramIndex;
       out << "\n";
     }

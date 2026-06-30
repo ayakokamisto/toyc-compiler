@@ -1,0 +1,11 @@
+// EXPECT: 13
+int main() {
+  int x = 3;
+  int y = 0;
+  if (x < 4) {
+    y = 10;
+  } else {
+    y = 20;
+  }
+  return y + x;
+}

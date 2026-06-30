@@ -26,6 +26,18 @@ coverage/
 /src2/
 /toy-c-compiler-master/
 /tools/
+!/tools/
+/tools/*
+!/tools/src_backend_regression/
+!/tools/src_backend_regression/**
+/tools/src_backend_regression/reports/*.s
+/tools/src_backend_regression/reports/*.stderr
+/tools/src_backend_regression/reports/*.elf
+!/tools/src_backend_regression/reports/latest_runtime.md
+/tools/src_backend_regression/reports/runtime/*
+!/tools/src_backend_regression/reports/runtime/.gitkeep
+!/tools/src_backend_regression/reports/.gitkeep
+!/tools/src_backend_regression/reports/latest.md
 
 # OS
 .DS_Store

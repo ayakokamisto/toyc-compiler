@@ -121,6 +121,7 @@ enum class FrameObjectKind : uint8_t {
   VRegHome,            // Spill slot for a virtual register
   OutgoingArgument,    // Outgoing arg to callee (stack arg, i >= 8)
   SavedReturnAddress,  // Saved ra
+  SavedCalleeSaved,    // Saved s1-s11 register
 };
 
 struct FrameObject {
@@ -129,6 +130,7 @@ struct FrameObject {
   int32_t offset = 0;     // Offset from sp (computed by FrameLayout)
   std::optional<SlotId> irSlot;   // For IRSlot kind
   std::optional<VRegId> vregId;   // For VRegHome kind
+  std::string physReg;            // For SavedCalleeSaved kind
   int32_t paramIndex = -1;        // For IncomingParameter / OutgoingArgument
 };
 
@@ -138,6 +140,7 @@ struct MIRInstruction {
   MIROpcode opcode;
   std::vector<MIROperand> operands;
   std::string comment;  // For Comment opcode
+  bool suppressVRegHomeStore = false;
 
   // Convenience constructors
   static MIRInstruction make(MIROpcode op, std::vector<MIROperand> ops = {});
@@ -196,6 +199,7 @@ struct FrameLayout {
   int32_t irSlotSize = 0;
   int32_t vregHomeSize = 0;
   int32_t savedRaSize = 0;
+  int32_t savedCalleeSize = 0;
   int32_t totalSize = 0;  // 16-byte aligned
 
   /// Compute the frame layout for a MIRFunction.
