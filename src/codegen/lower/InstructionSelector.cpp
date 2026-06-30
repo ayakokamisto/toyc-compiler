@@ -65,7 +65,11 @@ void InstructionSelector::beginBasicBlock() {
 
 void InstructionSelector::loadVReg(std::string_view reg, std::string_view vreg) {
     if (enableOpt_) {
-        vregCache_.load(abi_, emitter_, reg, vreg);
+        if (vregCache_.load(abi_, emitter_, reg, vreg)) {
+            // reg was overwritten — any cached global address for this
+            // register is now stale.
+            invalidateGlobalAddr(reg);
+        }
         return;
     }
     abi_.loadVReg(reg, vreg);
@@ -466,10 +470,12 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 }
                 if (enableOpt_ && inst.value == 1) {
                     emitter_.instruction("addi", {"t0", "zero", "1"});
+                    invalidateGlobalAddr("t0");
                     storeVReg(inst.dst, "t0");
                     return;
                 }
                 emitter_.instruction("li", {"t0", imm(inst.value)});
+                invalidateGlobalAddr("t0");
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::CopyInst>) {
                 if (enableOpt_) {
