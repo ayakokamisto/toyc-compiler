@@ -22,7 +22,8 @@ public:
                         const StackFrame& frame,
                         const VRegAssignment& assignment,
                         bool enableOpt = false,
-                        std::unordered_map<std::string, std::int32_t> foldableConsts = {});
+                        std::unordered_map<std::string, std::int32_t> foldableConsts = {},
+                        bool hasLoop = false);
 
     void beginBasicBlock();
     void emit(const contract::Instruction& instruction);
@@ -38,22 +39,14 @@ private:
     void loadVReg(std::string_view reg, std::string_view vreg);
     void storeVReg(std::string_view vreg, std::string_view reg);
     [[nodiscard]] std::optional<std::string_view> physicalReg(std::string_view vreg) const;
-    // Returns the constant value if `vreg` is a foldable immediate constant.
     [[nodiscard]] std::optional<std::int32_t> foldableConst(std::string_view vreg) const;
-    // True if either operand is a foldable constant.
     [[nodiscard]] bool hasFoldableOperand(std::string_view src1, std::string_view src2) const;
-    // If one operand is the foldable constant 0, returns the other operand;
-    // otherwise returns an empty view.
     [[nodiscard]] std::string_view zeroCompareOperand(std::string_view src1,
                                                       std::string_view src2) const;
-    // Emit a binary op whose right operand is an immediate (addi/slti/...).
-    // Returns false if the op cannot use the immediate form.
     [[nodiscard]] bool tryEmitImmediateBinaryOp(std::string_view dst,
                                                  std::string_view src,
                                                  std::int32_t imm,
                                                  std::string_view immMnemonic);
-    // Strength-reduce MulInst by a small constant: slli for powers of two,
-    // shift+add for common small multipliers (3/5/6/9/10).
     [[nodiscard]] bool tryEmitStrengthReducedMul(std::string_view dst,
                                                   std::string_view src,
                                                   std::int32_t multiplier);
@@ -61,8 +54,6 @@ private:
                                                std::string_view src1,
                                                std::string_view src2,
                                                std::string_view mnemonic);
-    // Three-operand form: when dst and src1 share a physical register, emit
-    // `op dst, dst, src2` instead of going through t0/t1 scratch registers.
     [[nodiscard]] bool tryEmitThreeOperandBinaryOp(std::string_view dst,
                                                     std::string_view src1,
                                                     std::string_view src2,
@@ -86,6 +77,7 @@ private:
                       std::string_view falseLabel,
                       std::string_view takenMnemonic,
                       std::string_view condReg);
+    [[nodiscard]] std::string_view pickGlobalAddrReg() const;
 
     RiscvEmitter& emitter_;
     const StackFrame& frame_;
@@ -93,11 +85,8 @@ private:
     CallingConvention abi_;
     BlockVRegCache vregCache_;
     bool enableOpt_ = false;
+    bool hasLoop_ = false;
     std::unordered_map<std::string, std::int32_t> foldableConsts_;
-    // Global-address cache: after LoadGlobal @g with `la t0, g`, t0 holds
-    // the address of g.  Subsequent StoreGlobal @g can reuse that register
-    // instead of emitting a second `la`.  Entries are invalidated when the
-    // address register is clobbered or a call occurs.
     std::unordered_map<std::string, std::string> globalAddrReg_;
     void invalidateGlobalAddr(std::string_view reg);
 };

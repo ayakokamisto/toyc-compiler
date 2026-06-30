@@ -32,10 +32,34 @@ void FunctionEmitter::emit(const contract::IRFunction& function) {
     const RegisterAllocation allocation =
         RegisterAllocator::allocate(function, options_.enableOpt, foldableConsts);
 
+    // Detect if the function contains a loop (any back-edge).
+    bool hasLoop = false;
+    if (options_.enableOpt) {
+        std::unordered_map<std::string, std::size_t> labelToIdx;
+        for (std::size_t i = 0; i < function.basicBlocks.size(); ++i)
+            labelToIdx[function.basicBlocks[i].label] = i;
+        for (std::size_t i = 0; i < function.basicBlocks.size() && !hasLoop; ++i) {
+            std::visit(
+                [&](const auto& t) {
+                    using T = std::decay_t<decltype(t)>;
+                    if constexpr (std::is_same_v<T, contract::JumpInst>) {
+                        auto it = labelToIdx.find(t.targetLabel);
+                        if (it != labelToIdx.end() && it->second <= i) hasLoop = true;
+                    } else if constexpr (std::is_same_v<T, contract::BranchInst>) {
+                        auto it = labelToIdx.find(t.trueLabel);
+                        if (it != labelToIdx.end() && it->second <= i) hasLoop = true;
+                        it = labelToIdx.find(t.falseLabel);
+                        if (it != labelToIdx.end() && it->second <= i) hasLoop = true;
+                    }
+                },
+                function.basicBlocks[i].terminator);
+        }
+    }
+
     const std::string functionEpilogueLabel = epilogueLabel(function.name);
     CallingConvention abi(emitter_, allocation.frame, allocation.assignment);
     InstructionSelector selector(
-        emitter_, allocation.frame, allocation.assignment, options_.enableOpt, foldableConsts);
+        emitter_, allocation.frame, allocation.assignment, options_.enableOpt, foldableConsts, hasLoop);
 
     if (options_.emitComment) {
         emitter_.comment("function " + function.name);
