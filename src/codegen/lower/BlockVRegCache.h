@@ -34,26 +34,38 @@ public:
         }
     }
 
-    // Loads vreg into reg. Returns true if reg was actually written
-    // (mv/lw emitted), false if the value was already in reg (no-op).
-    [[nodiscard]] bool load(CallingConvention& abi, RiscvEmitter& emitter,
-                            std::string_view reg, std::string_view vreg) {
+    // Track a global address as a pseudo-vreg so the normal vreg cache
+    // clobber mechanism automatically invalidates it when the register
+    // is overwritten.
+    void trackGlobalAddr(std::string_view reg, std::string_view globalName) {
+        const std::string addrVReg = std::string(globalName) + "$addr";
+        clobberRegister(reg);
+        vregToReg_[addrVReg] = std::string(reg);
+        regToVreg_[std::string(reg)] = addrVReg;
+    }
+
+    // Check whether a global address is still live in a register.
+    [[nodiscard]] std::optional<std::string_view> findGlobalAddr(std::string_view globalName) const {
+        const std::string addrVReg = std::string(globalName) + "$addr";
+        return findHolder(addrVReg);
+    }
+
+    void load(CallingConvention& abi, RiscvEmitter& emitter,
+              std::string_view reg, std::string_view vreg) {
         if (const std::optional<std::string_view> holder = findHolder(vreg)) {
             if (*holder != reg) {
                 emitter.instruction("mv", {reg, *holder});
-                // Move tracking to the new register.
-                regToVreg_.erase(std::string(*holder));
-                regToVreg_[std::string(reg)] = std::string(vreg);
-                vregToReg_[std::string(vreg)] = std::string(reg);
-                return true; // mv emitted → reg overwritten
             }
-            return false; // value already in reg → no write
+            // Move tracking to the new register.
+            regToVreg_.erase(std::string(*holder));
+            regToVreg_[std::string(reg)] = std::string(vreg);
+            vregToReg_[std::string(vreg)] = std::string(reg);
+            return;
         }
 
         abi.loadVReg(reg, vreg);
         clobberRegister(reg);
         setRegister(reg, vreg);
-        return true; // lw/mv emitted → reg overwritten
     }
 
     void store(CallingConvention& abi, std::string_view vreg, std::string_view reg) {
