@@ -584,11 +584,10 @@ bool eliminateTailRecursion(c::IRFunction& function) {
                 insts[rt.index]);
         }
 
-        // Replace the return terminator with a jump to the entry block.
-        // VRegAnalysis & DCE can track liveness across this successor edge.
-        // The backend redirects "entry" jumps past the prologue (to the
-        // tail_entry label) automatically.
-        block.terminator = c::JumpInst{"entry"};
+        // Replace the return terminator with a jump past the prologue.
+        // Use a dedicated label so only TRE-rewritten blocks trigger the
+        // tail_entry redirect — ordinary jumps to "entry" are unaffected.
+        block.terminator = c::JumpInst{"__tailrec_entry"};
         changed = true;
     }
 

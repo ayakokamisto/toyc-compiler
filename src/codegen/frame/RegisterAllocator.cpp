@@ -89,12 +89,19 @@ bool isLessValuableForRegister(const LiveInterval& lhs, const LiveInterval& rhs)
 
 // A call-crossing value must live in a callee-saved register (survives calls)
 // and pays a save/restore cost, so it must clear the profitability gate.
-bool isProfitableForCalleeSavedRegister(const LiveInterval& interval) {
+// When calleeSavedAlreadyInUse is true, the prologue/epilogue already save at
+// least one s-register, so the marginal cost of an additional s-register is
+// zero — even single-use values can use idle callee-saved registers.
+bool isProfitableForCalleeSavedRegister(const LiveInterval& interval,
+                                         bool calleeSavedAlreadyInUse) {
     if (interval.useCount <= 0) {
         return false;
     }
     if (interval.callCrossingCount > 0) {
         return true;
+    }
+    if (calleeSavedAlreadyInUse) {
+        return true; // sunk cost: prologue already saves s-registers
     }
     if (interval.spillWeight >= kLoopWeightedProfitability) {
         return true;
@@ -113,10 +120,10 @@ bool isProfitableForCallerSavedRegister(const LiveInterval& interval) {
 
 bool isIntervalCandidate(const LiveInterval& interval) {
     if (interval.callCrossingCount > 0) {
-        return isProfitableForCalleeSavedRegister(interval);
+        return isProfitableForCalleeSavedRegister(interval, /*calleeSavedAlreadyInUse=*/false);
     }
     return isProfitableForCallerSavedRegister(interval) ||
-           isProfitableForCalleeSavedRegister(interval);
+           isProfitableForCalleeSavedRegister(interval, /*calleeSavedAlreadyInUse=*/false);
 }
 
 void expireOldIntervals(const LiveInterval& current,
@@ -137,9 +144,12 @@ void expireOldIntervals(const LiveInterval& current,
 // Pick a free register for `interval` from `freeRegs`. A call-crossing
 // interval may only use callee-saved registers. A non-crossing interval
 // prefers a caller-saved temp (free); it falls back to a callee-saved register
-// only if it is profitable enough to pay the save/restore cost.
+// only if it is profitable enough to pay the save/restore cost, or when
+// callee-saved registers are already in use (sunk cost).
 // Returns the chosen register, or empty if none is usable.
-std::string pickFreeRegister(const LiveInterval& interval, std::vector<std::string>& freeRegs) {
+std::string pickFreeRegister(const LiveInterval& interval,
+                             std::vector<std::string>& freeRegs,
+                             bool calleeSavedAlreadyInUse) {
     const bool crossesCall = interval.callCrossingCount > 0;
     // freeRegs is kept sorted caller-saved first, then callee-saved.
     if (!crossesCall) {
@@ -152,7 +162,7 @@ std::string pickFreeRegister(const LiveInterval& interval, std::vector<std::stri
         }
         // No caller-saved temp left. Only consume a callee-saved register if
         // this value is worth its save/restore cost.
-        if (!isProfitableForCalleeSavedRegister(interval)) {
+        if (!isProfitableForCalleeSavedRegister(interval, calleeSavedAlreadyInUse)) {
             return {};
         }
     }
@@ -200,11 +210,15 @@ VRegAssignment assignPhysicalRegistersLinearScan(
 
     std::vector<ActiveInterval> active;
     std::map<std::string, std::string, std::less<>> assigned;
+    bool calleeSavedInUse = false;
 
     for (const LiveInterval& interval : intervals) {
         expireOldIntervals(interval, active, freeRegs);
 
-        if (std::string reg = pickFreeRegister(interval, freeRegs); !reg.empty()) {
+        if (std::string reg = pickFreeRegister(interval, freeRegs, calleeSavedInUse); !reg.empty()) {
+            if (!isCallerSaved(reg)) {
+                calleeSavedInUse = true;
+            }
             assigned[interval.vreg] = reg;
             active.push_back(ActiveInterval{interval, std::move(reg)});
             sortActiveByEnd(active);
@@ -213,7 +227,7 @@ VRegAssignment assignPhysicalRegistersLinearScan(
 
         // No free register usable for this interval. Try to steal from a less
         // valuable active interval that holds a register this one can use.
-        const bool calleeProfitable = isProfitableForCalleeSavedRegister(interval);
+        const bool calleeProfitable = isProfitableForCalleeSavedRegister(interval, calleeSavedInUse);
         ActiveInterval* spillTarget = nullptr;
         for (ActiveInterval& candidate : active) {
             if (isCallerSaved(candidate.reg)) {

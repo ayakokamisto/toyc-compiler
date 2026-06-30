@@ -61,6 +61,12 @@ private:
                                                std::string_view src1,
                                                std::string_view src2,
                                                std::string_view mnemonic);
+    // Three-operand form: when dst and src1 share a physical register, emit
+    // `op dst, dst, src2` instead of going through t0/t1 scratch registers.
+    [[nodiscard]] bool tryEmitThreeOperandBinaryOp(std::string_view dst,
+                                                    std::string_view src1,
+                                                    std::string_view src2,
+                                                    std::string_view mnemonic);
     [[nodiscard]] bool tryEmitPhysicalCompareOp(std::string_view dst,
                                                 std::string_view src1,
                                                 std::string_view src2,

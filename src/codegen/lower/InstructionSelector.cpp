@@ -187,6 +187,17 @@ bool InstructionSelector::tryEmitPhysicalLoadGlobal(std::string_view dst, std::s
         return false;
     }
 
+    // Reuse cached global address register when available — avoids redundant
+    // `la` when a prior LoadGlobal or StoreGlobal already loaded the address.
+    if (enableOpt_) {
+        const auto addrIt = globalAddrReg_.find(std::string(name));
+        if (addrIt != globalAddrReg_.end()) {
+            emitter_.instruction("lw", {*dstPhys, offsetReg(0, addrIt->second)});
+            vregCache_.forgetVReg(dst);
+            return true;
+        }
+    }
+
     emitter_.instruction("la", {"t0", globalLabel(name)});
     emitter_.instruction("lw", {*dstPhys, offsetReg(0, "t0")});
     vregCache_.clobberRegister("t0");
@@ -195,6 +206,51 @@ bool InstructionSelector::tryEmitPhysicalLoadGlobal(std::string_view dst, std::s
         invalidateGlobalAddr("t0");
         globalAddrReg_[std::string(name)] = "t0";
     }
+    return true;
+}
+
+bool InstructionSelector::tryEmitThreeOperandBinaryOp(std::string_view dst,
+                                                      std::string_view src1,
+                                                      std::string_view src2,
+                                                      std::string_view mnemonic) {
+    if (!enableOpt_) {
+        return false;
+    }
+    const std::optional<std::string_view> dstPhys = physicalReg(dst);
+    const std::optional<std::string_view> src1Phys = physicalReg(src1);
+    // Only apply when dst and src1 share a physical register.
+    if (!dstPhys.has_value() || !src1Phys.has_value() || *dstPhys != *src1Phys) {
+        return false;
+    }
+
+    // Determine the immediate/register mnemonic to use for the three-operand form.
+    auto immMnemonic = [&]() -> std::string_view {
+        if (mnemonic == "add") return "addi";
+        if (mnemonic == "sub") return "addi";  // addi dst, dst, -imm
+        if (mnemonic == "slt") return "slti";
+        return "";
+    }();
+
+    // Try foldable immediate
+    if (const auto immVal = foldableConst(src2); immVal.has_value() && !immMnemonic.empty()) {
+        const std::int32_t effImm = (mnemonic == "sub") ? -(*immVal) : *immVal;
+        emitter_.instruction(std::string(immMnemonic), {*dstPhys, *dstPhys, imm(effImm)});
+        vregCache_.forgetVReg(dst);
+        return true;
+    }
+
+    // Try physical register for src2
+    if (const std::optional<std::string_view> src2Phys = physicalReg(src2)) {
+        emitter_.instruction(std::string(mnemonic), {*dstPhys, *dstPhys, *src2Phys});
+        vregCache_.forgetVReg(dst);
+        return true;
+    }
+
+    // src2 on stack: load to t0, then three-operand
+    loadVReg("t0", src2);
+    vregCache_.clobberRegister("t0");
+    emitter_.instruction(std::string(mnemonic), {*dstPhys, *dstPhys, "t0"});
+    vregCache_.forgetVReg(dst);
     return true;
 }
 
@@ -208,6 +264,9 @@ void InstructionSelector::emitBinaryOp(std::string_view dst,
                                        std::string_view src2,
                                        std::string_view mnemonic) {
     if (tryEmitPhysicalBinaryOp(dst, src1, src2, mnemonic)) {
+        return;
+    }
+    if (tryEmitThreeOperandBinaryOp(dst, src1, src2, mnemonic)) {
         return;
     }
 
@@ -454,17 +513,33 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
             } else if constexpr (std::is_same_v<Inst, contract::StoreGlobalInst>) {
                 // Under -opt: try to reuse a cached global address so we don't
                 // emit a second `la`.  Non-opt keeps the original pattern.
+                //
+                // Use the source's physical register directly (if available)
+                // to avoid an unnecessary `mv` into a temp before the store.
+                const std::optional<std::string_view> srcPhys =
+                    enableOpt_ ? physicalReg(inst.src) : std::nullopt;
+
                 auto addrIt = enableOpt_ ? globalAddrReg_.find(inst.name)
                                          : globalAddrReg_.end();
                 if (addrIt != globalAddrReg_.end()) {
-                    loadVReg("t1", inst.src);
-                    vregCache_.clobberRegister("t1");
-                    emitter_.instruction("sw", {"t1", offsetReg(0, addrIt->second)});
+                    if (srcPhys.has_value()) {
+                        emitter_.instruction("sw", {*srcPhys, offsetReg(0, addrIt->second)});
+                        vregCache_.forgetVReg(inst.src);
+                    } else {
+                        loadVReg("t1", inst.src);
+                        vregCache_.clobberRegister("t1");
+                        emitter_.instruction("sw", {"t1", offsetReg(0, addrIt->second)});
+                    }
                 } else if (enableOpt_) {
-                    loadVReg("t1", inst.src);
-                    vregCache_.clobberRegister("t1");
                     emitter_.instruction("la", {"t0", globalLabel(inst.name)});
-                    emitter_.instruction("sw", {"t1", offsetReg(0, "t0")});
+                    if (srcPhys.has_value()) {
+                        emitter_.instruction("sw", {*srcPhys, offsetReg(0, "t0")});
+                        vregCache_.forgetVReg(inst.src);
+                    } else {
+                        loadVReg("t1", inst.src);
+                        vregCache_.clobberRegister("t1");
+                        emitter_.instruction("sw", {"t1", offsetReg(0, "t0")});
+                    }
                     vregCache_.clobberRegister("t0");
                     invalidateGlobalAddr("t0");
                     globalAddrReg_[inst.name] = "t0";
@@ -847,10 +922,11 @@ void InstructionSelector::emitTerminator(const contract::Terminator& terminator,
         [&](const auto& inst) {
             using Inst = std::decay_t<decltype(inst)>;
             if constexpr (std::is_same_v<Inst, contract::JumpInst>) {
-                // Jumps to "entry" from a non-entry block are tail-recursion
-                // back-edges — redirect past the prologue to the body label.
+                // Jumps to "__tailrec_entry" are TRE back-edges —
+                // redirect past the prologue to the body label.
+                // Ordinary jumps to "entry" follow the normal path.
                 const std::string target =
-                    (inst.targetLabel == "entry")
+                    (inst.targetLabel == "__tailrec_entry")
                         ? blockLabel(functionName, "tail_entry")
                         : blockLabel(functionName, inst.targetLabel);
                 emitter_.instruction("j", {target});

@@ -6,78 +6,85 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace toyc::codegen {
 
-// Tracks which vreg value currently lives in t0/t1 within one basic block.
-// Caller-saved temps are invalidated at block boundaries and after calls.
+// Tracks which vreg value currently lives in which physical register
+// within one basic block.  Cached entries are invalidated at block
+// boundaries, after calls, and when a register is explicitly clobbered.
+//
+// Previously tracked only t0/t1; now tracks all allocated registers
+// (t2–t6, s1–s11, plus scratch) so the selector can recognise when a
+// value is already register-resident and avoid redundant loads.
 class BlockVRegCache {
 public:
     void invalidateAll() {
-        t0_.reset();
-        t1_.reset();
+        vregToReg_.clear();
+        regToVreg_.clear();
     }
 
     void forgetVReg(std::string_view vreg) { dropVReg(vreg); }
 
     void clobberRegister(std::string_view reg) {
-        if (reg == "t0") {
-            t0_.reset();
-        } else if (reg == "t1") {
-            t1_.reset();
+        const auto it = regToVreg_.find(std::string(reg));
+        if (it != regToVreg_.end()) {
+            vregToReg_.erase(it->second);
+            regToVreg_.erase(it);
         }
     }
 
-    void load(CallingConvention& abi, RiscvEmitter& emitter, std::string_view reg, std::string_view vreg) {
+    void load(CallingConvention& abi, RiscvEmitter& emitter,
+              std::string_view reg, std::string_view vreg) {
         if (const std::optional<std::string_view> holder = findHolder(vreg)) {
             if (*holder != reg) {
                 emitter.instruction("mv", {reg, *holder});
             }
-            setRegister(reg, vreg);
+            // Move tracking to the new register.
+            regToVreg_.erase(std::string(*holder));
+            regToVreg_[std::string(reg)] = std::string(vreg);
+            vregToReg_[std::string(vreg)] = std::string(reg);
             return;
         }
 
         abi.loadVReg(reg, vreg);
+        clobberRegister(reg);
         setRegister(reg, vreg);
     }
 
     void store(CallingConvention& abi, std::string_view vreg, std::string_view reg) {
         abi.storeVReg(vreg, reg);
         dropVReg(vreg);
+        clobberRegister(reg);
         setRegister(reg, vreg);
     }
 
 private:
-    std::optional<std::string> t0_;
-    std::optional<std::string> t1_;
+    std::unordered_map<std::string, std::string> vregToReg_;
+    std::unordered_map<std::string, std::string> regToVreg_;
 
     [[nodiscard]] std::optional<std::string_view> findHolder(std::string_view vreg) const {
-        if (t0_ == vreg) {
-            return "t0";
+        const auto it = vregToReg_.find(std::string(vreg));
+        if (it == vregToReg_.end()) {
+            return std::nullopt;
         }
-        if (t1_ == vreg) {
-            return "t1";
-        }
-        return std::nullopt;
+        return it->second;
     }
 
     void dropVReg(std::string_view vreg) {
-        if (t0_ == vreg) {
-            t0_.reset();
-        }
-        if (t1_ == vreg) {
-            t1_.reset();
+        const auto it = vregToReg_.find(std::string(vreg));
+        if (it != vregToReg_.end()) {
+            regToVreg_.erase(it->second);
+            vregToReg_.erase(it);
         }
     }
 
     void setRegister(std::string_view reg, std::string_view vreg) {
         clobberRegister(reg);
-        const std::string bound(vreg);
-        if (reg == "t0") {
-            t0_ = bound;
-        } else if (reg == "t1") {
-            t1_ = bound;
-        }
+        const std::string boundVReg(vreg);
+        const std::string boundReg(reg);
+        vregToReg_[boundVReg] = boundReg;
+        regToVreg_[boundReg] = boundVReg;
     }
 };
 

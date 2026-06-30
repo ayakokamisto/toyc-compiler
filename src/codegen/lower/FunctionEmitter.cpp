@@ -47,19 +47,17 @@ void FunctionEmitter::emit(const contract::IRFunction& function) {
     // Entry-body label: sits after the prologue and parameter landing so
     // tail-recursion elimination can jump here (skipping stack-frame setup)
     // with freshly assigned parameter values.
-    // Only emit when a tail-recursive back-edge to "entry" exists.
+    // Only emit when a TRE-rewritten back-edge (to __tailrec_entry) exists.
+    // Ordinary jumps to "entry" (loop back-edges, etc.) are NOT affected.
     bool hasTailRecursionBackedge = false;
     for (const contract::BasicBlock& block : function.basicBlocks) {
-        if (block.label == "entry") {
-            continue;
-        }
         hasTailRecursionBackedge = std::visit(
             [](const auto& t) -> bool {
                 using T = std::decay_t<decltype(t)>;
                 if constexpr (std::is_same_v<T, contract::JumpInst>) {
-                    return t.targetLabel == "entry";
+                    return t.targetLabel == "__tailrec_entry";
                 } else if constexpr (std::is_same_v<T, contract::BranchInst>) {
-                    return t.trueLabel == "entry" || t.falseLabel == "entry";
+                    return t.trueLabel == "__tailrec_entry" || t.falseLabel == "__tailrec_entry";
                 } else {
                     return false;
                 }
