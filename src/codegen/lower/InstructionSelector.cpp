@@ -8,6 +8,12 @@
 
 namespace toyc::codegen {
 
+namespace {
+void onVRegCacheClobber(void* ctx, std::string_view reg) {
+    static_cast<InstructionSelector*>(ctx)->invalidateGlobalAddr(reg);
+}
+} // namespace
+
 InstructionSelector::InstructionSelector(RiscvEmitter& emitter,
                                          const StackFrame& frame,
                                          const VRegAssignment& assignment,
@@ -18,7 +24,9 @@ InstructionSelector::InstructionSelector(RiscvEmitter& emitter,
       assignment_(assignment),
       abi_(emitter, frame, assignment),
       enableOpt_(enableOpt),
-      foldableConsts_(std::move(foldableConsts)) {}
+      foldableConsts_(std::move(foldableConsts)) {
+    vregCache_.setClobberCallback(&onVRegCacheClobber, this);
+}
 
 std::optional<std::int32_t> InstructionSelector::foldableConst(std::string_view vreg) const {
     if (!enableOpt_) {

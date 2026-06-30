@@ -536,31 +536,95 @@ bool eliminateTailRecursion(c::IRFunction& function) {
             }
         }
 
-        // Reorder: a retargeted instruction that reads param V should execute
+        // Reorder: a retargeted instruction that reads param V must execute
         // BEFORE any retargeted instruction that writes V (the read needs the
-        // old value). Use simple bubble — retargets typically ≤ 3 elements.
-        bool reordered = true;
-        while (reordered) {
-            reordered = false;
-            for (std::size_t i = 0; i + 1 < retargets.size(); ++i) {
-                // right reads left's write target? → swap so right executes first
-                bool rightReadsLeftWrite = [&]() {
+        // old value).  Build a full N×N dependency graph and topologically
+        // sort.  If a cycle exists (e.g. f(b,c,a) with 3+ parameters), save
+        // the argument values to temporary vregs first to break the cycle.
+        {
+            const std::size_t n = retargets.size();
+            std::vector<std::vector<bool>> mustPrecede(n, std::vector<bool>(n, false));
+
+            for (std::size_t i = 0; i < n; ++i) {
+                for (std::size_t j = 0; j < n; ++j) {
+                    if (i == j) continue;
                     bool reads = false;
-                    forEachUse(const_cast<c::Instruction&>(insts[retargets[i + 1].index]),
+                    forEachUse(const_cast<c::Instruction&>(insts[retargets[j].index]),
                                [&](std::string& op) {
                                    if (op == retargets[i].paramVreg) reads = true;
                                });
-                    return reads;
-                }();
-                if (rightReadsLeftWrite) {
-                    std::swap(retargets[i], retargets[i + 1]);
-                    std::iter_swap(
-                        insts.begin() + static_cast<std::ptrdiff_t>(retargets[i].index),
-                        insts.begin() + static_cast<std::ptrdiff_t>(retargets[i + 1].index));
-                    // Fix up indices after the instruction swap.
-                    std::swap(retargets[i].index, retargets[i + 1].index);
-                    reordered = true;
+                    if (reads) mustPrecede[j][i] = true; // j reads i's target → j before i
                 }
+            }
+
+            // Kahn topological sort.
+            std::vector<int> inDegree(n, 0);
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t j = 0; j < n; ++j)
+                    if (mustPrecede[i][j]) ++inDegree[j];
+
+            std::vector<std::size_t> sorted;
+            std::vector<std::size_t> queue;
+            for (std::size_t i = 0; i < n; ++i)
+                if (inDegree[i] == 0) queue.push_back(i);
+
+            while (!queue.empty()) {
+                std::size_t u = queue.back();
+                queue.pop_back();
+                sorted.push_back(u);
+                for (std::size_t v = 0; v < n; ++v)
+                    if (mustPrecede[u][v] && --inDegree[v] == 0) queue.push_back(v);
+            }
+
+            if (sorted.size() < n) {
+                // Cycle detected — save args to temps, then copy temps to params.
+                retargets.clear();
+                for (std::size_t i = 0; i < callArgs.size() && i < function.params.size(); ++i) {
+                    const std::string& arg = callArgs[i];
+                    const std::string& paramVreg = function.params[i].vreg;
+                    if (arg == paramVreg) continue;
+                    const std::string tmp = paramVreg + "_tre_tmp";
+                    insts.push_back(c::CopyInst{tmp, arg});
+                }
+                for (std::size_t i = 0; i < callArgs.size() && i < function.params.size(); ++i) {
+                    const std::string& arg = callArgs[i];
+                    const std::string& paramVreg = function.params[i].vreg;
+                    if (arg == paramVreg) continue;
+                    insts.push_back(c::CopyInst{paramVreg, paramVreg + "_tre_tmp"});
+                }
+            } else {
+                // No cycle — apply topological order to retargets and reorder
+                // the corresponding instructions to match.
+                // Collect retargeted instructions in original retargets order
+                // BEFORE moving anything, so rtInsts[origIdx] is valid.
+                std::vector<c::Instruction> rtInsts;
+                rtInsts.reserve(n);
+                for (const auto& rt : retargets)
+                    rtInsts.push_back(std::move(insts[rt.index]));
+
+                // Mark which positions are retargeted.
+                std::vector<bool> isRt(insts.size(), false);
+                for (const auto& rt : retargets) isRt[rt.index] = true;
+
+                // Rebuild: non-retargeted keep original order; retargeted
+                // are appended in topological (dependency-respecting) order.
+                std::vector<c::Instruction> newInsts;
+                newInsts.reserve(insts.size());
+                for (std::size_t i = 0; i < insts.size(); ++i)
+                    if (!isRt[i]) newInsts.push_back(std::move(insts[i]));
+
+                std::vector<Retarget> ordered;
+                ordered.reserve(n);
+                for (std::size_t pos = 0; pos < n; ++pos) {
+                    const std::size_t origIdx = sorted[pos];
+                    Retarget rt = retargets[origIdx];
+                    rt.index = newInsts.size();
+                    ordered.push_back(rt);
+                    newInsts.push_back(std::move(rtInsts[origIdx]));
+                }
+
+                insts = std::move(newInsts);
+                retargets = std::move(ordered);
             }
         }
 

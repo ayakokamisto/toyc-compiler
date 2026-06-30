@@ -100,8 +100,8 @@ bool isProfitableForCalleeSavedRegister(const LiveInterval& interval,
     if (interval.callCrossingCount > 0) {
         return true;
     }
-    if (calleeSavedAlreadyInUse) {
-        return true; // sunk cost: prologue already saves s-registers
+    if (calleeSavedAlreadyInUse && interval.useCount >= kMinimumRepeatedUseCount) {
+        return true; // sunk cost only when value is used multiple times
     }
     if (interval.spillWeight >= kLoopWeightedProfitability) {
         return true;
