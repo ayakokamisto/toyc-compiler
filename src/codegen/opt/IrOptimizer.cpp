@@ -281,6 +281,15 @@ bool simplifyBlock(c::BasicBlock& block) {
             invalidateDef(dst, consts, copies);
         }
 
+        // StoreGlobalInst is a side effect that modifies memory.  Any
+        // previously loaded global value may be stale after the store,
+        // so clear the copy/const maps to prevent propagating stale
+        // values past the store.
+        if (std::holds_alternative<c::StoreGlobalInst>(inst)) {
+            consts.clear();
+            copies.clear();
+        }
+
         std::visit(
             [&](auto& i) {
                 using T = std::decay_t<decltype(i)>;

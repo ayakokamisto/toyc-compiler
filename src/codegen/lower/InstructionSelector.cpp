@@ -59,8 +59,7 @@ void InstructionSelector::invalidateGlobalAddr(std::string_view reg) {
 void InstructionSelector::beginBasicBlock() {
     if (enableOpt_) {
         vregCache_.invalidateAll();
-        // Global addresses are tracked as $addr pseudo-vregs in the vreg
-        // cache; invalidateAll() above clears them automatically.
+        globalAddrReg_.clear();
     }
 }
 
@@ -190,25 +189,23 @@ bool InstructionSelector::tryEmitPhysicalLoadGlobal(std::string_view dst, std::s
 
     // Reuse cached global address register when available — avoids redundant
     // `la` when a prior LoadGlobal or StoreGlobal already loaded the address.
-    // The address is tracked as a pseudo-vreg in the vreg cache so normal
-    // clobberRegister calls automatically invalidate it when the register
-    // is overwritten.
     if (enableOpt_) {
-        const auto addrReg = vregCache_.findGlobalAddr(name);
-        if (addrReg.has_value()) {
-            emitter_.instruction("lw", {*dstPhys, offsetReg(0, *addrReg)});
+        const auto addrIt = globalAddrReg_.find(std::string(name));
+        if (addrIt != globalAddrReg_.end()) {
+            emitter_.instruction("lw", {*dstPhys, offsetReg(0, addrIt->second)});
             vregCache_.forgetVReg(dst);
             return true;
         }
     }
 
     emitter_.instruction("la", {"t0", globalLabel(name)});
-    // Track address in vreg cache — clobberRegister("t0") will auto-invalidate.
-    if (enableOpt_) {
-        vregCache_.trackGlobalAddr("t0", name);
-    }
     emitter_.instruction("lw", {*dstPhys, offsetReg(0, "t0")});
+    vregCache_.clobberRegister("t0");
     vregCache_.forgetVReg(dst);
+    if (enableOpt_) {
+        invalidateGlobalAddr("t0");
+        globalAddrReg_[std::string(name)] = "t0";
+    }
     return true;
 }
 
@@ -498,15 +495,21 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 storeVReg(inst.dst, "t0");
             } else if constexpr (std::is_same_v<Inst, contract::LoadGlobalInst>) {
                 if (tryEmitPhysicalLoadGlobal(inst.dst, inst.name)) {
+                    // t0 holds address after la; track for later reuse.
+                    if (enableOpt_) {
+                        globalAddrReg_[inst.name] = "t0";
+                    }
                     return;
                 }
                 emitter_.instruction("la", {"t0", globalLabel(inst.name)});
-                if (enableOpt_) {
-                    vregCache_.trackGlobalAddr("t0", inst.name);
-                }
                 emitter_.instruction("lw", {"t1", offsetReg(0, "t0")});
+                vregCache_.clobberRegister("t0");
                 vregCache_.clobberRegister("t1");
                 storeVReg(inst.dst, "t1");
+                if (enableOpt_) {
+                    invalidateGlobalAddr("t0");
+                    globalAddrReg_[inst.name] = "t0";
+                }
             } else if constexpr (std::is_same_v<Inst, contract::StoreGlobalInst>) {
                 // Under -opt: try to reuse a cached global address so we don't
                 // emit a second `la`.  Non-opt keeps the original pattern.
@@ -516,20 +519,19 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                 const std::optional<std::string_view> srcPhys =
                     enableOpt_ ? physicalReg(inst.src) : std::nullopt;
 
-                const auto addrReg = enableOpt_ ? vregCache_.findGlobalAddr(inst.name)
-                                                : std::nullopt;
-                if (addrReg.has_value()) {
+                auto addrIt = enableOpt_ ? globalAddrReg_.find(inst.name)
+                                         : globalAddrReg_.end();
+                if (addrIt != globalAddrReg_.end()) {
                     if (srcPhys.has_value()) {
-                        emitter_.instruction("sw", {*srcPhys, offsetReg(0, *addrReg)});
+                        emitter_.instruction("sw", {*srcPhys, offsetReg(0, addrIt->second)});
                         vregCache_.forgetVReg(inst.src);
                     } else {
                         loadVReg("t1", inst.src);
                         vregCache_.clobberRegister("t1");
-                        emitter_.instruction("sw", {"t1", offsetReg(0, *addrReg)});
+                        emitter_.instruction("sw", {"t1", offsetReg(0, addrIt->second)});
                     }
                 } else if (enableOpt_) {
                     emitter_.instruction("la", {"t0", globalLabel(inst.name)});
-                    vregCache_.trackGlobalAddr("t0", inst.name);
                     if (srcPhys.has_value()) {
                         emitter_.instruction("sw", {*srcPhys, offsetReg(0, "t0")});
                         vregCache_.forgetVReg(inst.src);
@@ -538,6 +540,9 @@ void InstructionSelector::emit(const contract::Instruction& instruction) {
                         vregCache_.clobberRegister("t1");
                         emitter_.instruction("sw", {"t1", offsetReg(0, "t0")});
                     }
+                    vregCache_.clobberRegister("t0");
+                    invalidateGlobalAddr("t0");
+                    globalAddrReg_[inst.name] = "t0";
                 } else {
                     loadVReg("t0", inst.src);
                     emitter_.instruction("la", {"t1", globalLabel(inst.name)});

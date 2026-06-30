@@ -34,22 +34,6 @@ public:
         }
     }
 
-    // Track a global address as a pseudo-vreg so the normal vreg cache
-    // clobber mechanism automatically invalidates it when the register
-    // is overwritten.
-    void trackGlobalAddr(std::string_view reg, std::string_view globalName) {
-        const std::string addrVReg = std::string(globalName) + "$addr";
-        clobberRegister(reg);
-        vregToReg_[addrVReg] = std::string(reg);
-        regToVreg_[std::string(reg)] = addrVReg;
-    }
-
-    // Check whether a global address is still live in a register.
-    [[nodiscard]] std::optional<std::string_view> findGlobalAddr(std::string_view globalName) const {
-        const std::string addrVReg = std::string(globalName) + "$addr";
-        return findHolder(addrVReg);
-    }
-
     void load(CallingConvention& abi, RiscvEmitter& emitter,
               std::string_view reg, std::string_view vreg) {
         if (const std::optional<std::string_view> holder = findHolder(vreg)) {
