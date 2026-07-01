@@ -47,6 +47,10 @@ public:
 
     virtual Value* result() const { return nullptr; }
     virtual std::vector<Value*> operands() const { return {}; }
+    virtual void replace_operand(Value* old_value, Value* replacement) {
+        (void)old_value;
+        (void)replacement;
+    }
     virtual bool is_terminator() const { return false; }
     virtual bool has_side_effect() const { return false; }
     virtual InstrKind kind() const = 0;
@@ -93,6 +97,7 @@ public:
 
     Temp* temp() const { return result_; }
     Value* address() const { return address_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
 private:
     Temp* result_;
@@ -116,6 +121,7 @@ public:
 
     Value* value() const { return value_; }
     Value* address() const { return address_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
 private:
     Value* value_;
@@ -168,6 +174,7 @@ public:
     Op op() const { return op_; }
     Value* left() const { return left_; }
     Value* right() const { return right_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
     static const char* op_name(Op op);
 
@@ -198,6 +205,7 @@ public:
     Temp* temp() const { return result_; }
     Op op() const { return op_; }
     Value* value() const { return value_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
     static const char* op_name(Op op);
 
@@ -228,6 +236,7 @@ public:
     Predicate predicate() const { return pred_; }
     Value* left() const { return left_; }
     Value* right() const { return right_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
     static const char* pred_name(Predicate p);
 
@@ -259,6 +268,7 @@ public:
     const std::string& callee() const { return callee_; }
     Type return_type() const { return return_type_; }
     const std::vector<Value*>& args() const { return args_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
 private:
     Temp* result_;
@@ -284,6 +294,7 @@ public:
 
     Temp* temp() const { return result_; }
     Value* value() const { return value_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
 private:
     Temp* result_;
@@ -312,7 +323,9 @@ public:
 
     Temp* temp() const { return result_; }
     void add_incoming(Label* pred, Value* val);
+    void replaceIncomingValue(Label* predecessor, Value* oldValue, Value* newValue);
     const std::vector<Incoming>& incoming() const { return incoming_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
 private:
     Temp* result_;
@@ -357,6 +370,7 @@ public:
     Value* condition() const { return condition_; }
     Label* true_target() const { return true_target_; }
     Label* false_target() const { return false_target_; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
 private:
     Value* condition_;
@@ -381,6 +395,7 @@ public:
 
     Value* value() const { return value_; }
     bool has_value() const { return value_ != nullptr; }
+    void replace_operand(Value* old_value, Value* replacement) override;
 
 private:
     Value* value_;
@@ -408,3 +423,5 @@ private:
     Temp* result_;
     GlobalVar* global_;
 };
+
+using Instruction = Instr;

@@ -33,11 +33,14 @@ public:
 
     // --- Phi access ---
     const std::vector<InstrPtr>& phis() const { return phis_; }
+    std::vector<InstrPtr>& mutable_phis() { return phis_; }
     void add_phi(InstrPtr phi);
     void clear_phis();
 
     // --- Body instructions (non-phi, non-terminator) ---
     const std::vector<InstrPtr>& instructions() const { return instrs_; }
+    std::vector<InstrPtr>& mutable_instructions() { return instrs_; }
+    size_t terminator_index() const { return instrs_.size(); }
     void add_instruction(InstrPtr instr);
     void insert_instruction(size_t index, InstrPtr instr);
     void replace_body(std::vector<InstrPtr> new_instrs);

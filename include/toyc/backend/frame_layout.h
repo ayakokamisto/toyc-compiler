@@ -2,6 +2,7 @@
 #include "toyc/ir/function.h"
 #include "toyc/ir/instruction.h"
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 
 struct FrameLayout {
@@ -21,6 +22,11 @@ struct FrameLayout {
     uint32_t incomingStackArgOffset(uint32_t paramIndex) const {
         return frameSize + (paramIndex - 8) * 4;
     }
+
+    bool isAllocaAddress(const Value* value) const;
+    bool hasValueHome(const Value* value) const;
+    std::optional<uint32_t> allocaOffset(const Value* value) const;
+    std::optional<uint32_t> valueOffset(const Value* value) const;
 
     static FrameLayout compute(const Function& fn);
 };

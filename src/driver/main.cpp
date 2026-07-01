@@ -2,9 +2,14 @@
 #include "toyc/frontend/lexer.h"
 #include "toyc/frontend/parser.h"
 #include "toyc/frontend/semantic_analyzer.h"
+#include "toyc/ir/alloca_promotability.h"
+#include "toyc/ir/control_flow_graph.h"
+#include "toyc/ir/def_use.h"
+#include "toyc/ir/dominator_tree.h"
 #include "toyc/ir/ir_builder.h"
 #include "toyc/ir/ir_printer.h"
 #include "toyc/ir/ir_verifier.h"
+#include "toyc/ir/mem2reg.h"
 #include "toyc/ir/module.h"
 
 #include <cstring>
@@ -156,7 +161,153 @@ static void print_tokens(std::ostream& os, const std::vector<Token>& tokens) {
     }
 }
 
-enum class Mode { DumpIrSmoke, DumpTokens, DumpAst, DumpIr, Compile };
+static void print_block_list(std::ostream& os, const std::vector<const BasicBlock*>& blocks) {
+    os << "[";
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        if (i != 0) os << ", ";
+        os << blocks[i]->label()->name();
+    }
+    os << "]";
+}
+
+static void dump_cfg(std::ostream& os, const IRProgram& ir) {
+    for (const auto& fn : ir.module()->functions()) {
+        ControlFlowGraph cfg(*fn);
+        os << "function " << fn->name() << ":\n";
+        for (const BasicBlock* block : cfg.blocks()) {
+            os << "  " << block->label()->name()
+               << ": reachable=" << (cfg.isReachable(*block) ? "yes" : "no");
+            os << " preds="; print_block_list(os, cfg.predecessors(*block));
+            os << " succs="; print_block_list(os, cfg.successors(*block));
+            os << "\n";
+        }
+    }
+}
+
+static void dump_dom(std::ostream& os, const IRProgram& ir) {
+    for (const auto& fn : ir.module()->functions()) {
+        ControlFlowGraph cfg(*fn);
+        DominatorTree dom(cfg);
+        os << "function " << fn->name() << ":\n";
+        for (const BasicBlock* block : cfg.blocks()) {
+            const BasicBlock* idom = dom.immediateDominator(*block);
+            os << "  " << block->label()->name()
+               << ": idom=" << (idom ? idom->label()->name() : "<none>");
+            os << " children="; print_block_list(os, dom.children(*block));
+            os << " frontier="; print_block_list(os, dom.dominanceFrontier(*block));
+            os << "\n";
+        }
+    }
+}
+
+static void dump_defuse(std::ostream& os, const IRProgram& ir) {
+    for (const auto& fn : ir.module()->functions()) {
+        DefUseIndex def_use(*fn);
+        os << "function " << fn->name() << ":\n";
+        for (const auto& block : fn->blocks()) {
+            for (const Instruction* instruction : block->all_instrs()) {
+                if (Value* result = instruction->result()) {
+                    os << "  " << result->name() << ": def=" << IRPrinter::print(*instruction);
+                    os << " uses=[";
+                    const auto& uses = def_use.usesOf(*result);
+                    for (std::size_t i = 0; i < uses.size(); ++i) {
+                        if (i != 0) os << "; ";
+                        os << IRPrinter::print(*uses[i].user) << " operand " << uses[i].operandIndex;
+                    }
+                    os << "]\n";
+                }
+            }
+        }
+    }
+}
+
+static void dump_promotable_allocas(std::ostream& os, const IRProgram& ir) {
+    for (const auto& fn : ir.module()->functions()) {
+        DefUseIndex def_use(*fn);
+        AllocaPromotabilityAnalysis promotability(*fn, def_use);
+        os << "function " << fn->name() << ":\n";
+        os << "  entry alloca prefix:";
+        for (const Value* value : promotability.entryAllocaPrefix()) {
+            os << " " << value->name();
+        }
+        os << "\n";
+        for (const Value* value : promotability.allocaAddresses()) {
+            const auto& info = promotability.analyze(*value);
+            os << "  " << value->name() << ": " << to_string(info.kind);
+            if (info.kind != AllocaPromotionKind::Promotable) {
+                os << " (" << info.reason << ")";
+            }
+            os << "\n";
+        }
+    }
+}
+
+static void dump_mem2reg(std::ostream& os, IRProgram& ir) {
+    os << "before mem2reg:\n";
+    os << IRPrinter::print(ir);
+    os << "\n";
+
+    std::vector<std::string> promoted;
+    std::vector<std::string> skipped;
+    std::vector<std::string> diagnostics;
+    for (const auto& fn : ir.module()->functions()) {
+        ControlFlowGraph cfg(*fn);
+        DominatorTree dom(cfg);
+        DefUseIndex def_use(*fn);
+        AllocaPromotabilityAnalysis promotability(*fn, def_use);
+        Mem2RegResult result = promoteMemToReg(*fn, cfg, dom, def_use, promotability);
+        for (const Value* value : result.promotedAllocas) promoted.push_back(value->name());
+        for (const Value* value : result.skippedAllocas) skipped.push_back(value->name());
+        diagnostics.insert(diagnostics.end(), result.diagnostics.begin(), result.diagnostics.end());
+
+        auto errors = verifyIR(*fn);
+        auto ssa_errors = verifySSA(*fn);
+        errors.insert(errors.end(), ssa_errors.begin(), ssa_errors.end());
+        if (!errors.empty()) {
+            for (const auto& error : errors) {
+                diagnostics.push_back("verify: " + error.message);
+            }
+        }
+    }
+
+    os << "promoted allocas:\n";
+    if (promoted.empty()) {
+        os << "  <none>\n";
+    } else {
+        for (const auto& name : promoted) os << "  " << name << "\n";
+    }
+    os << "\n";
+
+    os << "skipped allocas:\n";
+    if (skipped.empty()) {
+        os << "  <none>\n";
+    } else {
+        for (const auto& name : skipped) os << "  " << name << "\n";
+    }
+    os << "\n";
+
+    if (!diagnostics.empty()) {
+        os << "diagnostics:\n";
+        for (const auto& diagnostic : diagnostics) os << "  " << diagnostic << "\n";
+        os << "\n";
+    }
+
+    os << "after mem2reg:\n";
+    os << IRPrinter::print(ir);
+}
+
+enum class Mode {
+    DumpIrSmoke,
+    DumpTokens,
+    DumpAst,
+    DumpIr,
+    DumpCfg,
+    DumpDom,
+    DumpDefUse,
+    DumpPromotableAllocas,
+    DumpMem2Reg,
+    Compile
+};
 
 int main(int argc, char* argv[]) {
     Mode mode = Mode::Compile;
@@ -165,6 +316,13 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--dump-tokens") == 0)   mode = Mode::DumpTokens;
         else if (std::strcmp(argv[i], "--dump-ast") == 0)      mode = Mode::DumpAst;
         else if (std::strcmp(argv[i], "--dump-ir") == 0)       mode = Mode::DumpIr;
+        else if (std::strcmp(argv[i], "--dump-cfg") == 0)      mode = Mode::DumpCfg;
+        else if (std::strcmp(argv[i], "--dump-dom") == 0)      mode = Mode::DumpDom;
+        else if (std::strcmp(argv[i], "--dump-defuse") == 0)   mode = Mode::DumpDefUse;
+        else if (std::strcmp(argv[i], "--dump-promotable-allocas") == 0)
+            mode = Mode::DumpPromotableAllocas;
+        else if (std::strcmp(argv[i], "--dump-mem2reg") == 0)
+            mode = Mode::DumpMem2Reg;
         else if (std::strcmp(argv[i], "-opt") == 0) { /* no-op */ }
         else {
             std::cerr << argv[i] << ": error: unknown option\n";
@@ -197,14 +355,34 @@ int main(int argc, char* argv[]) {
         }
 
         auto ir = IRBuilder::build(program);
-        if (mode == Mode::DumpIr) { std::cout << IRPrinter::print(*ir); return 0; }
-
         for (const auto& fn : ir->module()->functions()) {
             auto ir_errs = verifyIR(*fn);
             if (!ir_errs.empty()) {
                 for (auto& e : ir_errs) std::cerr << "error: " << e.message << "\n";
                 return 1;
             }
+            DefUseIndex def_use(*fn);
+            auto defuse_errs = verifyDefUseConsistency(*fn, def_use);
+            if (!defuse_errs.empty()) {
+                for (auto& e : defuse_errs) std::cerr << "error: " << e << "\n";
+                return 1;
+            }
+        }
+
+        if (mode == Mode::DumpIr) { std::cout << IRPrinter::print(*ir); return 0; }
+        if (mode == Mode::DumpCfg) { dump_cfg(std::cout, *ir); return 0; }
+        if (mode == Mode::DumpDom) { dump_dom(std::cout, *ir); return 0; }
+        if (mode == Mode::DumpDefUse) { dump_defuse(std::cout, *ir); return 0; }
+        if (mode == Mode::DumpPromotableAllocas) {
+            dump_promotable_allocas(std::cout, *ir);
+            return 0;
+        }
+        if (mode == Mode::DumpMem2Reg) {
+            dump_mem2reg(std::cout, *ir);
+            return 0;
+        }
+
+        for (const auto& fn : ir->module()->functions()) {
             auto p1_errs = verifyP1EmitterSupport(*fn);
             if (!p1_errs.empty()) {
                 for (auto& e : p1_errs) std::cerr << "error: " << e.message << "\n";

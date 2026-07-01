@@ -270,3 +270,57 @@ TEST(FrameLayoutTest, NestedCallOutgoingArea) {
     for (const auto& [value, offset] : layout.valueHome) EXPECT_GE(offset, 4u);
     for (const auto& [value, offset] : layout.allocaHome) EXPECT_GE(offset, 4u);
 }
+
+TEST(FrameLayoutTest, NestedLogicalSlotsAreAllocaHomes) {
+    auto ir = EmitterTestHelper::build_ir(
+        "int main() { int x = 0; int y = x == 0 || (x == 1 || x == 2); return y; }");
+    ASSERT_NE(ir, nullptr);
+    const Function* main = findFunction(*ir, "main");
+    ASSERT_NE(main, nullptr);
+    FrameLayout layout = FrameLayout::compute(*main);
+
+    int logicSlotCount = 0;
+    for (const auto& [name, local] : main->locals()) {
+        if (name.find("logic.slot") != std::string::npos) {
+            ++logicSlotCount;
+            EXPECT_TRUE(layout.isAllocaAddress(local)) << local->name();
+            EXPECT_FALSE(layout.hasValueHome(local)) << local->name();
+        }
+    }
+    EXPECT_GE(logicSlotCount, 2);
+}
+
+TEST(FrameLayoutTest, GlobalAddressTempsUseValueHome) {
+    auto ir = EmitterTestHelper::build_ir(
+        "int g = 1; int main() { g = g + 1; return g; }");
+    ASSERT_NE(ir, nullptr);
+    const Function* main = findFunction(*ir, "main");
+    ASSERT_NE(main, nullptr);
+    FrameLayout layout = FrameLayout::compute(*main);
+
+    bool sawGlobalAddr = false;
+    for (const auto& block : main->blocks()) {
+        for (auto* instr : block->all_instrs()) {
+            if (instr->kind() == InstrKind::GlobalAddr) {
+                sawGlobalAddr = true;
+                EXPECT_TRUE(layout.hasValueHome(instr->result())) << instr->result()->name();
+                EXPECT_FALSE(layout.isAllocaAddress(instr->result())) << instr->result()->name();
+            }
+        }
+    }
+    EXPECT_TRUE(sawGlobalAddr);
+}
+
+TEST(RiscvEmitterTest, NestedLogicalStoreLoadAddressCompiles) {
+    std::string a = EmitterTestHelper::compile(
+        "int main() { int x = 0; if ((x == 0 || x == 1) && !(x == 2)) return 1; return 0; }");
+    EXPECT_NE(a.find("land_rhs"), std::string::npos);
+    EXPECT_NE(a.find("lor_rhs"), std::string::npos);
+}
+
+TEST(RiscvEmitterTest, NestedWhileStoreLoadAddressCompiles) {
+    std::string a = EmitterTestHelper::compile(
+        "int main() { int i = 0; while (i < 2) { int j = i; while (j < 3) { j = j + 1; } i = i + 1; } return i; }");
+    EXPECT_NE(a.find("while_body"), std::string::npos);
+    EXPECT_NE(a.find("sw"), std::string::npos);
+}

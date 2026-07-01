@@ -4,7 +4,6 @@
 #include <ostream>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 struct FuncInfo {
@@ -17,6 +16,7 @@ struct GlobalSymbol {
     std::string asmLabel;
     int32_t initialValue;
     bool zeroInitialized;
+    bool immutable;
     SourceLocation declaredAt;
 };
 
@@ -28,11 +28,12 @@ public:
     void print_errors(std::ostream& os) const;
     const FuncInfo* lookup_function(const std::string& name) const;
 private:
-    struct Scope { std::unordered_set<std::string> names; };
+    struct Scope { std::unordered_map<std::string, bool> names; };
     void push_scope(); void pop_scope();
     bool is_in_current_scope(const std::string& name) const;
     bool is_declared(const std::string& name) const;
-    void declare(const std::string& name, const SourceLocation& loc);
+    bool is_immutable(const std::string& name) const;
+    void declare(const std::string& name, const SourceLocation& loc, bool immutable = false);
     void analyze_function(const FunctionDef& func);
     void analyze_stmt(const Stmt& stmt);
     void analyze_compound(const CompoundStmt& stmt);

@@ -240,3 +240,45 @@ TEST(ParserTest, SemanticAllowsVoidCallExpressionStatement) {
     SemanticAnalyzer sema;
     EXPECT_TRUE(sema.analyze(program));
 }
+
+TEST(ParserTest, ConstGlobalDeclaration) {
+    Program prog = ParserTestHelper::parse("const int g = 1 || (1 / 0); int main() { return g; }");
+    ASSERT_EQ(prog.globals.size(), 1u);
+    EXPECT_EQ(prog.globals[0].name, "g");
+    EXPECT_TRUE(prog.globals[0].isConst);
+    EXPECT_NE(dynamic_cast<BinaryExpr*>(prog.globals[0].initializer.get()), nullptr);
+}
+
+TEST(ParserTest, ConstLocalDeclaration) {
+    Program prog = ParserTestHelper::parse("int main() { const int x = 7; return x; }");
+    auto& stmts = prog.functions[0].body->statements;
+    ASSERT_EQ(stmts.size(), 2u);
+    auto* decl = dynamic_cast<VarDeclStmt*>(stmts[0].get());
+    ASSERT_NE(decl, nullptr);
+    EXPECT_EQ(decl->name, "x");
+    EXPECT_TRUE(decl->isConst);
+}
+
+TEST(ParserTest, SemanticAllowsConstShortCircuitInitializer) {
+    std::string errors = ParserTestHelper::semantic_errors(
+        "const int g = 1 || (1 / 0); int main() { const int x = 0 && (1 / 0); return g + x; }");
+    EXPECT_TRUE(errors.empty()) << errors;
+}
+
+TEST(ParserTest, SemanticRejectsConstAssignment) {
+    std::string errors = ParserTestHelper::semantic_errors(
+        "const int g = 1; int main() { g = 2; return g; }");
+    EXPECT_NE(errors.find("assignment to const variable 'g'"), std::string::npos);
+}
+
+TEST(ParserTest, SemanticRejectsLocalConstAssignment) {
+    std::string errors = ParserTestHelper::semantic_errors(
+        "int main() { const int x = 1; x = 2; return x; }");
+    EXPECT_NE(errors.find("assignment to const variable 'x'"), std::string::npos);
+}
+
+TEST(ParserTest, SemanticRejectsNonconstantConstInitializer) {
+    std::string errors = ParserTestHelper::semantic_errors(
+        "int f() { return 7; } int main() { const int x = f(); return x; }");
+    EXPECT_NE(errors.find("const initializer is not a constant integer expression"), std::string::npos);
+}

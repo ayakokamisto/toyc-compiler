@@ -1,6 +1,71 @@
 #include "toyc/ir/ir_builder.h"
 #include <sstream>
 #include <stdexcept>
+#include <optional>
+
+namespace {
+std::optional<int32_t> eval_module_constant(const Expr& expr);
+
+bool eval_binary(int32_t& result, BinaryOp op, int32_t left, int32_t right) {
+    auto uleft = static_cast<uint32_t>(left);
+    auto uright = static_cast<uint32_t>(right);
+    switch (op) {
+    case BinaryOp::Add: result = static_cast<int32_t>(uleft + uright); return true;
+    case BinaryOp::Sub: result = static_cast<int32_t>(uleft - uright); return true;
+    case BinaryOp::Mul: result = static_cast<int32_t>(uleft * uright); return true;
+    case BinaryOp::Div:
+        if (uright == 0) return false;
+        result = static_cast<int32_t>(uleft / uright); return true;
+    case BinaryOp::Mod:
+        if (uright == 0) return false;
+        result = static_cast<int32_t>(uleft % uright); return true;
+    case BinaryOp::Lt: result = (left < right) ? 1 : 0; return true;
+    case BinaryOp::Gt: result = (left > right) ? 1 : 0; return true;
+    case BinaryOp::Le: result = (left <= right) ? 1 : 0; return true;
+    case BinaryOp::Ge: result = (left >= right) ? 1 : 0; return true;
+    case BinaryOp::Eq: result = (left == right) ? 1 : 0; return true;
+    case BinaryOp::Ne: result = (left != right) ? 1 : 0; return true;
+    default: return false;
+    }
+}
+
+std::optional<int32_t> eval_module_constant(const Expr& expr) {
+    if (auto* il = dynamic_cast<const IntLiteralExpr*>(&expr)) return il->value;
+    if (auto* u = dynamic_cast<const UnaryExpr*>(&expr)) {
+        auto operand = eval_module_constant(*u->operand);
+        if (!operand) return std::nullopt;
+        switch (u->op) {
+        case UnaryOp::Plus: return operand;
+        case UnaryOp::Minus: return -static_cast<int32_t>(*operand);
+        case UnaryOp::Not: return *operand == 0 ? int32_t{1} : int32_t{0};
+        }
+    }
+    if (auto* b = dynamic_cast<const BinaryExpr*>(&expr)) {
+        if (b->op == BinaryOp::And) {
+            auto lhs = eval_module_constant(*b->left);
+            if (!lhs) return std::nullopt;
+            if (*lhs == 0) return int32_t{0};
+            auto rhs = eval_module_constant(*b->right);
+            if (!rhs) return std::nullopt;
+            return *rhs != 0 ? int32_t{1} : int32_t{0};
+        }
+        if (b->op == BinaryOp::Or) {
+            auto lhs = eval_module_constant(*b->left);
+            if (!lhs) return std::nullopt;
+            if (*lhs != 0) return int32_t{1};
+            auto rhs = eval_module_constant(*b->right);
+            if (!rhs) return std::nullopt;
+            return *rhs != 0 ? int32_t{1} : int32_t{0};
+        }
+        auto lhs = eval_module_constant(*b->left);
+        auto rhs = eval_module_constant(*b->right);
+        if (!lhs || !rhs) return std::nullopt;
+        int32_t result = 0;
+        if (eval_binary(result, b->op, *lhs, *rhs)) return result;
+    }
+    return std::nullopt;
+}
+}
 
 IRBuilder::IRBuilder() : module_(std::make_unique<Module>()), short_circuit_enabled_(true) {}
 
@@ -9,8 +74,9 @@ std::unique_ptr<IRProgram> IRBuilder::build(const Program& program) {
     for (const auto& g : program.globals) {
         int32_t init_val = 0;
         if (g.initializer) {
-            if (auto* il = dynamic_cast<const IntLiteralExpr*>(g.initializer.get()))
-                init_val = il->value;
+            auto val = eval_module_constant(*g.initializer);
+            if (!val) throw std::runtime_error("global initializer is not a constant integer expression");
+            init_val = *val;
         }
         builder.module_->new_global_var(g.name, init_val);
     }
@@ -220,19 +286,26 @@ EmitFlow IRBuilder::emit_assign(const AssignStmt& stmt) {
 }
 EmitFlow IRBuilder::emit_if(const IfStmt& stmt) {
     auto* then_b = append_block("if.then"); BasicBlock* else_b = nullptr; BasicBlock* merge_b = nullptr;
-    if (stmt.elseStmt) { else_b = append_block("if.else"); merge_b = append_block("if.end");
+    if (stmt.elseStmt) { else_b = append_block("if.else");
         emit_condition(*stmt.condition, then_b->label(), else_b->label()); }
     else { merge_b = append_block("if.end");
         emit_condition(*stmt.condition, then_b->label(), merge_b->label()); }
     current_block_ = then_b; EmitFlow then_f = emit_stmt(*stmt.thenStmt);
-    if (then_f == EmitFlow::FallsThrough && !current_block_->is_terminated())
+    if (then_f == EmitFlow::FallsThrough && !current_block_->is_terminated()) {
+        if (!merge_b) merge_b = append_block("if.end");
         current_block_->set_terminator(std::make_unique<BranchInstr>(merge_b->label()));
+    }
     EmitFlow else_f = EmitFlow::Terminates;
     if (stmt.elseStmt) { current_block_ = else_b; else_f = emit_stmt(*stmt.elseStmt);
-        if (else_f == EmitFlow::FallsThrough && !current_block_->is_terminated())
+        if (else_f == EmitFlow::FallsThrough && !current_block_->is_terminated()) {
+            if (!merge_b) merge_b = append_block("if.end");
             current_block_->set_terminator(std::make_unique<BranchInstr>(merge_b->label())); }
+        }
     else else_f = EmitFlow::FallsThrough;
-    if (then_f == EmitFlow::Terminates && else_f == EmitFlow::Terminates) return EmitFlow::Terminates;
+    if (then_f == EmitFlow::Terminates && else_f == EmitFlow::Terminates) {
+        current_block_ = nullptr;
+        return EmitFlow::Terminates;
+    }
     current_block_ = merge_b; return EmitFlow::FallsThrough;
 }
 EmitFlow IRBuilder::emit_while(const WhileStmt& stmt) {

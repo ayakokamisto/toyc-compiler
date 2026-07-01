@@ -61,6 +61,7 @@ struct VarDeclStmt final : Stmt {
     std::string name;
     std::unique_ptr<Expr> initializer;
     SourceLocation location;
+    bool isConst = false;
 };
 struct AssignStmt final : Stmt { std::string name; std::unique_ptr<Expr> value; };
 struct IfStmt final : Stmt {
@@ -81,8 +82,9 @@ struct GlobalVarDecl {
     std::string name;
     std::unique_ptr<Expr> initializer; // always present per Java oracle
     SourceLocation location;
-    GlobalVarDecl(std::string n, std::unique_ptr<Expr> i, SourceLocation l)
-        : name(std::move(n)), initializer(std::move(i)), location(l) {}
+    bool isConst = false;
+    GlobalVarDecl(std::string n, std::unique_ptr<Expr> i, SourceLocation l, bool c = false)
+        : name(std::move(n)), initializer(std::move(i)), location(l), isConst(c) {}
 };
 
 // --- Function ---

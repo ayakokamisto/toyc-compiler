@@ -1,6 +1,26 @@
 #include "toyc/backend/frame_layout.h"
 #include <algorithm>
 
+bool FrameLayout::isAllocaAddress(const Value* value) const {
+    return allocaHome.find(value) != allocaHome.end();
+}
+
+bool FrameLayout::hasValueHome(const Value* value) const {
+    return valueHome.find(value) != valueHome.end();
+}
+
+std::optional<uint32_t> FrameLayout::allocaOffset(const Value* value) const {
+    auto it = allocaHome.find(value);
+    if (it == allocaHome.end()) return std::nullopt;
+    return it->second;
+}
+
+std::optional<uint32_t> FrameLayout::valueOffset(const Value* value) const {
+    auto it = valueHome.find(value);
+    if (it == valueHome.end()) return std::nullopt;
+    return it->second;
+}
+
 FrameLayout FrameLayout::compute(const Function& fn) {
     FrameLayout layout;
     uint32_t maxCallArgs = 0;

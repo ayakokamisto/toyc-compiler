@@ -1,6 +1,23 @@
 #include "toyc/ir/instruction.h"
 
 // ---------------------------------------------------------------------------
+// LoadInstr
+// ---------------------------------------------------------------------------
+
+void LoadInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (address_ == old_value) address_ = replacement;
+}
+
+// ---------------------------------------------------------------------------
+// StoreInstr
+// ---------------------------------------------------------------------------
+
+void StoreInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (value_ == old_value) value_ = replacement;
+    if (address_ == old_value) address_ = replacement;
+}
+
+// ---------------------------------------------------------------------------
 // BinaryOpInstr
 // ---------------------------------------------------------------------------
 
@@ -15,6 +32,11 @@ const char* BinaryOpInstr::op_name(Op op) {
     return "?";
 }
 
+void BinaryOpInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (left_ == old_value) left_ = replacement;
+    if (right_ == old_value) right_ = replacement;
+}
+
 // ---------------------------------------------------------------------------
 // UnaryOpInstr
 // ---------------------------------------------------------------------------
@@ -25,6 +47,10 @@ const char* UnaryOpInstr::op_name(Op op) {
     case Op::Not: return "not";
     }
     return "?";
+}
+
+void UnaryOpInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (value_ == old_value) value_ = replacement;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +69,11 @@ const char* CompareInstr::pred_name(Predicate p) {
     return "?";
 }
 
+void CompareInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (left_ == old_value) left_ = replacement;
+    if (right_ == old_value) right_ = replacement;
+}
+
 // ---------------------------------------------------------------------------
 // CallInstr
 // ---------------------------------------------------------------------------
@@ -53,12 +84,40 @@ std::vector<Value*> CallInstr::operands() const {
     return args_;
 }
 
+void CallInstr::replace_operand(Value* old_value, Value* replacement) {
+    for (Value*& arg : args_) {
+        if (arg == old_value) arg = replacement;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MoveInstr
+// ---------------------------------------------------------------------------
+
+void MoveInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (value_ == old_value) value_ = replacement;
+}
+
 // ---------------------------------------------------------------------------
 // PhiInstr
 // ---------------------------------------------------------------------------
 
 void PhiInstr::add_incoming(Label* pred, Value* val) {
     incoming_.push_back({pred, val});
+}
+
+void PhiInstr::replaceIncomingValue(Label* predecessor, Value* oldValue, Value* newValue) {
+    for (auto& inc : incoming_) {
+        if (inc.predecessor == predecessor && inc.value == oldValue) {
+            inc.value = newValue;
+        }
+    }
+}
+
+void PhiInstr::replace_operand(Value* old_value, Value* replacement) {
+    for (auto& inc : incoming_) {
+        if (inc.value == old_value) inc.value = replacement;
+    }
 }
 
 std::vector<Value*> PhiInstr::operands() const {
@@ -71,6 +130,14 @@ std::vector<Value*> PhiInstr::operands() const {
 }
 
 // ---------------------------------------------------------------------------
+// CondBranchInstr
+// ---------------------------------------------------------------------------
+
+void CondBranchInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (condition_ == old_value) condition_ = replacement;
+}
+
+// ---------------------------------------------------------------------------
 // ReturnInstr
 // ---------------------------------------------------------------------------
 
@@ -79,4 +146,8 @@ std::vector<Value*> ReturnInstr::operands() const {
         return {value_};
     }
     return {};
+}
+
+void ReturnInstr::replace_operand(Value* old_value, Value* replacement) {
+    if (value_ == old_value) value_ = replacement;
 }

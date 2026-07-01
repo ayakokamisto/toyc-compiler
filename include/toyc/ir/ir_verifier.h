@@ -17,6 +17,7 @@ struct IRVerifierError {
 };
 
 std::vector<IRVerifierError> verifyIR(const Function& fn);
+std::vector<IRVerifierError> verifySSA(const Function& fn);
 std::vector<IRVerifierError> verifyP1EmitterSupport(const Function& fn);
 
 // Returns true if no errors.

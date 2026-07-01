@@ -4,7 +4,14 @@
 #include <sstream>
 
 Lexer::Lexer(std::string_view source)
-    : source_(source) {}
+    : source_(source) {
+    if (source_.size() >= 3 &&
+        static_cast<unsigned char>(source_[0]) == 0xEF &&
+        static_cast<unsigned char>(source_[1]) == 0xBB &&
+        static_cast<unsigned char>(source_[2]) == 0xBF) {
+        pos_ = 3;
+    }
+}
 
 std::vector<Token> Lexer::tokenize() {
     skip_whitespace_and_comments();
@@ -112,6 +119,8 @@ Token Lexer::lex_identifier_or_keyword() {
         tok.kind = TokenKind::KwVoid;
     } else if (tok.lexeme == "continue") {
         tok.kind = TokenKind::KwContinue;
+    } else if (tok.lexeme == "const") {
+        tok.kind = TokenKind::KwConst;
     } else {
         tok.kind = TokenKind::Identifier;
     }

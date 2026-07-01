@@ -15,7 +15,9 @@ enable_testing()
 set(IR_SOURCES
     src/ir/value.cpp src/ir/instruction.cpp src/ir/basic_block.cpp
     src/ir/function.cpp src/ir/module.cpp src/ir/ir_printer.cpp
-    src/ir/cfg.cpp src/ir/ir_builder.cpp src/ir/ir_verifier.cpp
+    src/ir/cfg.cpp src/ir/dominator_tree.cpp src/ir/def_use.cpp
+    src/ir/alloca_promotability.cpp src/ir/mem2reg.cpp
+    src/ir/ir_builder.cpp src/ir/ir_verifier.cpp
 )
 set(FRONTEND_SOURCES
     src/frontend/lexer.cpp src/frontend/parser.cpp src/frontend/semantic_analyzer.cpp
@@ -37,6 +39,8 @@ if(TOYC_BUILD_TESTS)
     foreach(TEST_SRC
         tests/ir/ir_model_test.cpp
         tests/ir/cfg_test.cpp
+        tests/ir/analysis_test.cpp
+        tests/ir/mem2reg_test.cpp
         tests/frontend/lexer_test.cpp
         tests/frontend/parser_test.cpp
         tests/ir/ir_builder_test.cpp

@@ -18,7 +18,7 @@ bool SemanticAnalyzer::analyze(const Program& program) {
             std::ostringstream m; m << "global variable '" << g.name << "' requires an initializer";
             error(m.str(), g.location);
         }
-        globals_[g.name] = {g.name, g.name, 0, false, g.location};
+        globals_[g.name] = {g.name, g.name, 0, false, g.isConst, g.location};
     }
 
     for (const auto& func : program.functions) {
@@ -100,12 +100,20 @@ bool SemanticAnalyzer::is_declared(const std::string& name) const {
         if (it->names.count(name)) return true;
     return false;
 }
-void SemanticAnalyzer::declare(const std::string& name, const SourceLocation& loc) {
+bool SemanticAnalyzer::is_immutable(const std::string& name) const {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+        auto found = it->names.find(name);
+        if (found != it->names.end()) return found->second;
+    }
+    auto global = globals_.find(name);
+    return global != globals_.end() && global->second.immutable;
+}
+void SemanticAnalyzer::declare(const std::string& name, const SourceLocation& loc, bool immutable) {
     if (is_in_current_scope(name)) {
         std::ostringstream m; m << "redefinition of variable '" << name << "'";
         error(m.str(), loc); return;
     }
-    scopes_.back().names.insert(name);
+    scopes_.back().names[name] = immutable;
 }
 
 void SemanticAnalyzer::analyze_compound(const CompoundStmt& stmt) {
@@ -126,11 +134,23 @@ void SemanticAnalyzer::analyze_stmt(const Stmt& stmt) {
 }
 void SemanticAnalyzer::analyze_var_decl(const VarDeclStmt& stmt) {
     if (stmt.initializer) analyze_expr(*stmt.initializer);
-    declare(stmt.name, stmt.location);
+    if (stmt.isConst) {
+        if (!stmt.initializer) {
+            std::ostringstream m; m << "const variable '" << stmt.name << "' requires an initializer";
+            error(m.str(), stmt.location);
+        } else if (!evaluate_global_constant(*stmt.initializer).has_value() && !has_errors_) {
+            std::ostringstream m; m << "const initializer is not a constant integer expression";
+            error(m.str(), stmt.location);
+        }
+    }
+    declare(stmt.name, stmt.location, stmt.isConst);
 }
 void SemanticAnalyzer::analyze_assign(const AssignStmt& stmt) {
     if (!is_declared(stmt.name) && !globals_.count(stmt.name)) {
         std::ostringstream m; m << "use of undeclared identifier '" << stmt.name << "'";
+        error(m.str(), {0,0});
+    } else if (is_immutable(stmt.name)) {
+        std::ostringstream m; m << "assignment to const variable '" << stmt.name << "'";
         error(m.str(), {0,0});
     }
     if (stmt.value) analyze_expr(*stmt.value);

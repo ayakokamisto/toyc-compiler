@@ -9,6 +9,7 @@
 #include "toyc/ir/value.h"
 
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 // =============================================================================
@@ -262,6 +263,71 @@ TEST(UseDefTest, LoadImmOperands) {
     auto ops = li.operands();
     ASSERT_EQ(ops.size(), 1u);
     EXPECT_EQ(ops[0], c);
+}
+
+TEST(BasicBlockTerminatorInvariantTest, InsertEntryAllocaBeforeExistingTerminator) {
+    auto fn = std::make_unique<Function>("f", Type::Int, std::vector<LocalVar*>{});
+    BasicBlock* entry = fn->entry_block();
+    LocalVar* x = fn->new_local("x", false);
+    Temp* t = fn->new_temp(Type::Int);
+
+    entry->add_instruction(std::make_unique<LoadImmInstr>(t, fn->new_constant(7)));
+    entry->set_terminator(std::make_unique<ReturnInstr>(t));
+    entry->insert_instruction(0, std::make_unique<AllocaInstr>(x));
+
+    auto all = entry->all_instrs();
+    ASSERT_EQ(all.size(), 3u);
+    EXPECT_EQ(all[0]->kind(), InstrKind::Alloca);
+    EXPECT_EQ(all[1]->kind(), InstrKind::LoadImm);
+    EXPECT_EQ(all[2]->kind(), InstrKind::Return);
+}
+
+TEST(BasicBlockTerminatorInvariantTest, InsertInstructionAfterTerminatorRejected) {
+    auto fn = std::make_unique<Function>("f", Type::Int, std::vector<LocalVar*>{});
+    BasicBlock* entry = fn->entry_block();
+    Temp* t = fn->new_temp(Type::Int);
+
+    entry->set_terminator(std::make_unique<ReturnInstr>(t));
+    EXPECT_THROW(
+        entry->insert_instruction(1, std::make_unique<LoadImmInstr>(t, fn->new_constant(1))),
+        std::out_of_range);
+}
+
+TEST(BasicBlockTerminatorInvariantTest, AppendInstructionAfterTerminatorRejected) {
+    auto fn = std::make_unique<Function>("f", Type::Int, std::vector<LocalVar*>{});
+    BasicBlock* entry = fn->entry_block();
+    Temp* t = fn->new_temp(Type::Int);
+
+    entry->set_terminator(std::make_unique<ReturnInstr>(t));
+    EXPECT_THROW(
+        entry->add_instruction(std::make_unique<LoadImmInstr>(t, fn->new_constant(1))),
+        std::logic_error);
+}
+
+TEST(BasicBlockTerminatorInvariantTest, BodyTerminatorRejectedByOrdinaryApis) {
+    auto fn = std::make_unique<Function>("f", Type::Int, std::vector<LocalVar*>{});
+    BasicBlock* entry = fn->entry_block();
+    Temp* t = fn->new_temp(Type::Int);
+
+    EXPECT_THROW(
+        entry->add_instruction(std::make_unique<ReturnInstr>(t)),
+        std::invalid_argument);
+    EXPECT_THROW(
+        entry->insert_instruction(0, std::make_unique<ReturnInstr>(t)),
+        std::invalid_argument);
+    std::vector<InstrPtr> body;
+    body.push_back(std::make_unique<ReturnInstr>(t));
+    EXPECT_THROW(entry->replace_body(std::move(body)), std::invalid_argument);
+}
+
+TEST(BasicBlockTerminatorInvariantTest, SetTerminatorRequiresTerminatorInstruction) {
+    auto fn = std::make_unique<Function>("f", Type::Int, std::vector<LocalVar*>{});
+    BasicBlock* entry = fn->entry_block();
+    Temp* t = fn->new_temp(Type::Int);
+
+    EXPECT_THROW(
+        entry->set_terminator(std::make_unique<LoadImmInstr>(t, fn->new_constant(1))),
+        std::invalid_argument);
 }
 
 // =============================================================================

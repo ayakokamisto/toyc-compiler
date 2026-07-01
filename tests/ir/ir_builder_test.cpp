@@ -5,6 +5,7 @@
 #include "toyc/frontend/semantic_analyzer.h"
 #include "toyc/ir/ir_builder.h"
 #include "toyc/ir/ir_printer.h"
+#include "toyc/ir/ir_verifier.h"
 
 class TestHelper {
 public:
@@ -22,6 +23,13 @@ private:
     static std::vector<std::unique_ptr<IRProgram>> programs_;
 };
 std::vector<std::unique_ptr<IRProgram>> TestHelper::programs_;
+
+static const Function* findFunction(const IRProgram& ir, const std::string& name) {
+    for (const auto& fn : ir.module()->functions()) {
+        if (fn->name() == name) return fn.get();
+    }
+    return nullptr;
+}
 
 TEST(IRBuilderTest, SimpleReturn42) {
     auto* ir = TestHelper::build("int main() { return 42; }");
@@ -128,4 +136,64 @@ TEST(IRBuilderTest, WhileLoop) {
     EXPECT_NE(out.find("while.cond"), std::string::npos);
     EXPECT_NE(out.find("while.body"), std::string::npos);
     EXPECT_NE(out.find("while.end"), std::string::npos);
+}
+
+TEST(IRBuilderTest, GlobalShortCircuitOrInitializerFoldsToOne) {
+    auto* ir = TestHelper::build("int g = 1 || (1 / 0); int main() { return g; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("global @g = 1"), std::string::npos);
+}
+
+TEST(IRBuilderTest, IfBothBranchesReturnHasNoDanglingMergeBlock) {
+    auto* ir = TestHelper::build(
+        "int main() { if (1) { return 7; } else { return 9; } int x = 3; return x; }");
+    ASSERT_NE(ir, nullptr);
+    const Function* main = findFunction(*ir, "main");
+    ASSERT_NE(main, nullptr);
+    EXPECT_TRUE(verifyIR(*main).empty());
+    EXPECT_EQ(IRPrinter::print(*main).find("if.end"), std::string::npos);
+}
+
+TEST(IRBuilderTest, IfThenReturnElseFallthroughHasTerminatedMerge) {
+    auto* ir = TestHelper::build(
+        "int main() { int x = 7; if (x) return x; else x = 9; return x; }");
+    ASSERT_NE(ir, nullptr);
+    const Function* main = findFunction(*ir, "main");
+    ASSERT_NE(main, nullptr);
+    EXPECT_TRUE(verifyIR(*main).empty());
+    EXPECT_NE(IRPrinter::print(*main).find("if.end"), std::string::npos);
+}
+
+TEST(IRBuilderTest, IfWithoutElseThenReturnHasTerminatedMerge) {
+    auto* ir = TestHelper::build(
+        "int main() { int x = 0; if (x) return 7; return 9; }");
+    ASSERT_NE(ir, nullptr);
+    const Function* main = findFunction(*ir, "main");
+    ASSERT_NE(main, nullptr);
+    EXPECT_TRUE(verifyIR(*main).empty());
+    EXPECT_NE(IRPrinter::print(*main).find("if.end"), std::string::npos);
+}
+
+TEST(IRBuilderTest, NestedLogicalAllocaAddressesRemainInEntry) {
+    auto* ir = TestHelper::build(
+        "int main() { int x = 0; int y = x == 0 || (x == 1 || x == 2); return y; }");
+    ASSERT_NE(ir, nullptr);
+    const Function* main = findFunction(*ir, "main");
+    ASSERT_NE(main, nullptr);
+    EXPECT_TRUE(verifyIR(*main).empty());
+    EXPECT_TRUE(verifyP1EmitterSupport(*main).empty());
+    std::string out = IRPrinter::print(*main);
+    EXPECT_NE(out.find("%logic.slot.2 = alloca"), std::string::npos);
+    EXPECT_NE(out.find("%logic.slot.3 = alloca"), std::string::npos);
+}
+
+TEST(IRBuilderTest, NestedWhileLocalAllocaAddressRemainsInEntry) {
+    auto* ir = TestHelper::build(
+        "int main() { int i = 0; while (i < 2) { int j = i; while (j < 3) { j = j + 1; } i = i + 1; } return i; }");
+    ASSERT_NE(ir, nullptr);
+    const Function* main = findFunction(*ir, "main");
+    ASSERT_NE(main, nullptr);
+    EXPECT_TRUE(verifyIR(*main).empty());
+    EXPECT_TRUE(verifyP1EmitterSupport(*main).empty());
+    EXPECT_NE(IRPrinter::print(*main).find("%j."), std::string::npos);
 }

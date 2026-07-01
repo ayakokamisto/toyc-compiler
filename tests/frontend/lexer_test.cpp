@@ -28,6 +28,12 @@ TEST(LexerTest, KeywordReturn) {
     EXPECT_EQ(tokens[0].kind, TokenKind::KwReturn);
 }
 
+TEST(LexerTest, KeywordConst) {
+    auto tokens = Lexer("const").tokenize();
+    ASSERT_GE(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::KwConst);
+}
+
 TEST(LexerTest, FullProgram) {
     auto tokens = Lexer("int main() { return 42; }").tokenize();
     ASSERT_GE(tokens.size(), 8u);
@@ -44,6 +50,14 @@ TEST(LexerTest, FullProgram) {
     EXPECT_EQ(tokens[7].kind, TokenKind::Semicolon);
     EXPECT_EQ(tokens[8].kind, TokenKind::RBrace);
     EXPECT_EQ(tokens[9].kind, TokenKind::Eof);
+}
+
+TEST(LexerTest, Utf8BomBeforeProgram) {
+    auto tokens = Lexer("\xEF\xBB\xBFint main() { return 0; }").tokenize();
+    ASSERT_GE(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::KwInt);
+    EXPECT_EQ(tokens[0].location.line, 1);
+    EXPECT_EQ(tokens[0].location.column, 1);
 }
 
 TEST(LexerTest, Operators) {

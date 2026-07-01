@@ -44,3 +44,34 @@ private:
 // Extract successor Label targets from a block's terminator.
 // Returns an empty vector for blocks with a Return terminator or no terminator.
 std::vector<Label*> successor_labels(BasicBlock* bb);
+
+class ControlFlowGraph {
+public:
+    using BlockList = std::vector<const BasicBlock*>;
+    using BlockSet = std::unordered_set<const BasicBlock*>;
+    using BlockMap = std::unordered_map<const BasicBlock*, BlockList>;
+
+    explicit ControlFlowGraph(const Function& function);
+
+    const Function& function() const { return function_; }
+    const BasicBlock* entry() const { return entry_; }
+    const BlockList& blocks() const { return blocks_; }
+    const BlockList& successors(const BasicBlock& block) const;
+    const BlockList& predecessors(const BasicBlock& block) const;
+    bool isReachable(const BasicBlock& block) const;
+    const BlockList& reversePostOrder() const { return rpo_; }
+    const BlockList& unreachableBlocks() const { return unreachable_; }
+
+private:
+    void build();
+    void dfsReachable(const BasicBlock* block, BlockSet& visited);
+
+    const Function& function_;
+    const BasicBlock* entry_ = nullptr;
+    BlockList blocks_;
+    BlockMap successors_;
+    BlockMap predecessors_;
+    BlockSet reachable_;
+    BlockList rpo_;
+    BlockList unreachable_;
+};

@@ -27,9 +27,20 @@ void Parser::error(const std::string& msg) {
 // ===========================================================================
 Program Parser::parse_program() {
     Program prog;
-    while (peek().kind == TokenKind::KwInt || peek().kind == TokenKind::KwVoid) {
+    while (peek().kind == TokenKind::KwInt || peek().kind == TokenKind::KwVoid || peek().kind == TokenKind::KwConst) {
         TokenKind kw = peek().kind;
-        size_t save = pos_;
+        if (kw == TokenKind::KwConst) {
+            consume();
+            expect(TokenKind::KwInt, "expected 'int' after 'const'");
+            auto& nt = expect(TokenKind::Identifier, "expected name");
+            std::string name = nt.lexeme;
+            SourceLocation loc = nt.location;
+            expect(TokenKind::Equal, "expected '=' after const global name");
+            auto init = parse_expr();
+            expect(TokenKind::Semicolon, "expected ';' after const global declaration");
+            prog.globals.push_back(GlobalVarDecl(name, std::move(init), loc, true));
+            continue;
+        }
         // Peek past "int/void" and "name" to see what follows
         if (peek(0).kind == TokenKind::KwInt && peek(2).kind != TokenKind::LParen) {
             // int name; or int name = expr; -> global declaration
@@ -41,11 +52,11 @@ Program Parser::parse_program() {
                 consume();
                 auto init = parse_expr();
                 expect(TokenKind::Semicolon, "expected ';' after global declaration");
-                prog.globals.push_back(GlobalVarDecl(name, std::move(init), loc));
+                prog.globals.push_back(GlobalVarDecl(name, std::move(init), loc, false));
             } else if (peek().kind == TokenKind::Semicolon) {
                 consume();
                 // Parse for a stable semantic diagnostic aligned with the Java oracle.
-                prog.globals.push_back(GlobalVarDecl(name, nullptr, loc));
+                prog.globals.push_back(GlobalVarDecl(name, nullptr, loc, false));
             } else {
                 error("expected '=' or ';' after global variable name");
             }
@@ -102,7 +113,9 @@ std::vector<Param> Parser::parse_params() {
 // ===========================================================================
 std::unique_ptr<Stmt> Parser::parse_statement() {
     switch (peek().kind) {
-    case TokenKind::KwInt: return parse_declaration();
+    case TokenKind::KwInt:
+    case TokenKind::KwConst:
+        return parse_declaration();
     case TokenKind::KwIf: return parse_if();
     case TokenKind::KwWhile: return parse_while();
     case TokenKind::KwBreak: return parse_break();
@@ -117,7 +130,12 @@ std::unique_ptr<Stmt> Parser::parse_statement() {
 }
 
 std::unique_ptr<Stmt> Parser::parse_declaration() {
-    expect(TokenKind::KwInt, "expected 'int'");
+    bool is_const = match(TokenKind::KwConst);
+    if (is_const) {
+        expect(TokenKind::KwInt, "expected 'int' after 'const'");
+    } else {
+        expect(TokenKind::KwInt, "expected 'int'");
+    }
     auto& nt = expect(TokenKind::Identifier, "expected variable name");
     std::string name = nt.lexeme;
     SourceLocation loc = nt.location;
@@ -125,7 +143,7 @@ std::unique_ptr<Stmt> Parser::parse_declaration() {
     auto init = parse_expr();
     expect(TokenKind::Semicolon, "expected ';'");
     auto d = std::make_unique<VarDeclStmt>();
-    d->name = std::move(name); d->initializer = std::move(init); d->location = loc;
+    d->name = std::move(name); d->initializer = std::move(init); d->location = loc; d->isConst = is_const;
     return d;
 }
 

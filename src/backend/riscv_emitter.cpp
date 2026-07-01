@@ -12,16 +12,16 @@ std::string RiscvEmitter::emit(const IRProgram& program) {
 static std::string load_val(const FrameLayout& layout, Value* val, const std::string& reg) {
     if (auto* c = dynamic_cast<Constant*>(val))
         return "li " + reg + ", " + std::to_string(c->value());
-    auto it = layout.valueHome.find(val);
-    if (it == layout.valueHome.end())
+    auto offset = layout.valueOffset(val);
+    if (!offset)
         throw std::runtime_error("value has no frame home");
-    return "lw " + reg + ", " + std::to_string(it->second) + "(s0)";
+    return "lw " + reg + ", " + std::to_string(*offset) + "(s0)";
 }
 static std::string store_val(const FrameLayout& layout, Value* val, const std::string& reg) {
-    auto it = layout.valueHome.find(val);
-    if (it == layout.valueHome.end())
+    auto offset = layout.valueOffset(val);
+    if (!offset)
         throw std::runtime_error("value has no frame home");
-    return "sw " + reg + ", " + std::to_string(it->second) + "(s0)";
+    return "sw " + reg + ", " + std::to_string(*offset) + "(s0)";
 }
 
 static std::string escape_label_component(const std::string& text) {
@@ -56,14 +56,14 @@ void RiscvEmitter::emit_function(const Function& fn) {
     if (!blocks.empty()) os_ << blockLabel(fn, *blocks[0]) << ":\n";
     emit_prologue(layout_, fn);
     for (size_t i = 0; i < fn.parameters().size() && i < 8; i++) {
-        auto it = layout_.allocaHome.find(fn.parameters()[i]);
-        if (it != layout_.allocaHome.end())
-            os_ << "  sw a" << i << ", " << it->second << "(s0)\n";
+        auto offset = layout_.allocaOffset(fn.parameters()[i]);
+        if (offset)
+            os_ << "  sw a" << i << ", " << *offset << "(s0)\n";
     }
     for (size_t i = 8; i < fn.parameters().size(); i++) {
-        auto it = layout_.allocaHome.find(fn.parameters()[i]);
-        if (it != layout_.allocaHome.end())
-            os_ << "lw t0, " << layout_.incomingStackArgOffset((uint32_t)i) << "(s0)\n  sw t0, " << it->second << "(s0)\n";
+        auto offset = layout_.allocaOffset(fn.parameters()[i]);
+        if (offset)
+            os_ << "lw t0, " << layout_.incomingStackArgOffset((uint32_t)i) << "(s0)\n  sw t0, " << *offset << "(s0)\n";
     }
     bool first = true;
     for (const auto& bb : fn.blocks()) {
@@ -171,20 +171,20 @@ void RiscvEmitter::emit_compare(const CompareInstr& cmp) {
 }
 void RiscvEmitter::emit_store(const StoreInstr& st) {
     os_ << load_val(layout_, st.value(), "t0") << "\n";
-    auto it = layout_.allocaHome.find(st.address());
-    if (it != layout_.allocaHome.end()) { os_ << "  sw t0, " << it->second << "(s0)"; return; }
-    auto it2 = layout_.valueHome.find(st.address());
-    if (it2 != layout_.valueHome.end()) {
-        os_ << "  lw t1, " << it2->second << "(s0)\n  sw t0, 0(t1)"; return;
+    auto alloca = layout_.allocaOffset(st.address());
+    if (alloca) { os_ << "  sw t0, " << *alloca << "(s0)"; return; }
+    auto value = layout_.valueOffset(st.address());
+    if (value) {
+        os_ << "  lw t1, " << *value << "(s0)\n  sw t0, 0(t1)"; return;
     }
     throw std::runtime_error("P2 emitter only supports local alloca or global addr for Store");
 }
 void RiscvEmitter::emit_load(const LoadInstr& ld) {
-    auto it = layout_.allocaHome.find(ld.address());
-    if (it != layout_.allocaHome.end()) { os_ << "lw t0, " << it->second << "(s0)\n  " << store_val(layout_, ld.result(), "t0"); return; }
-    auto it2 = layout_.valueHome.find(ld.address());
-    if (it2 != layout_.valueHome.end()) {
-        os_ << "lw t0, " << it2->second << "(s0)\n  lw t1, 0(t0)\n  " << store_val(layout_, ld.result(), "t1"); return;
+    auto alloca = layout_.allocaOffset(ld.address());
+    if (alloca) { os_ << "lw t0, " << *alloca << "(s0)\n  " << store_val(layout_, ld.result(), "t0"); return; }
+    auto value = layout_.valueOffset(ld.address());
+    if (value) {
+        os_ << "lw t0, " << *value << "(s0)\n  lw t1, 0(t0)\n  " << store_val(layout_, ld.result(), "t1"); return;
     }
     throw std::runtime_error("P2 emitter only supports local alloca or global addr for Load");
 }

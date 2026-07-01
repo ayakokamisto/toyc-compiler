@@ -39,6 +39,29 @@ std::vector<IRVerifierError> verifyIR(const Function& fn) {
         // Check: terminator is at the end (no instructions after terminator).
         // This is structurally enforced by the IR design, but verify.
         Instr* term = bb->terminator();
+        (void)term;
+
+        for (const auto& body_instr : bb->instructions()) {
+            auto* instr = body_instr.get();
+            if (instr->is_terminator()) {
+                std::ostringstream msg;
+                msg << "terminator appears in block body for '" << bb->label()->name() << "'";
+                errors.push_back({0, msg.str()});
+            }
+            if (instr->kind() == InstrKind::Phi) {
+                std::ostringstream msg;
+                msg << "phi appears outside phi prefix for '" << bb->label()->name() << "'";
+                errors.push_back({0, msg.str()});
+            }
+        }
+
+        for (const auto& phi_instr : bb->phis()) {
+            if (phi_instr->kind() != InstrKind::Phi) {
+                std::ostringstream msg;
+                msg << "non-phi instruction appears in phi prefix for '" << bb->label()->name() << "'";
+                errors.push_back({0, msg.str()});
+            }
+        }
 
         // Check: each Value has exactly one defining instruction.
         // (unique definition)
@@ -78,6 +101,69 @@ std::vector<IRVerifierError> verifyIR(const Function& fn) {
                     std::ostringstream msg;
                     msg << "null operand in instruction";
                     errors.push_back({0, msg.str()});
+                }
+            }
+        }
+    }
+
+    return errors;
+}
+
+std::vector<IRVerifierError> verifySSA(const Function& fn) {
+    std::vector<IRVerifierError> errors;
+    CFG cfg = CFG::build(const_cast<Function&>(fn));
+    std::unordered_map<const Value*, const Instruction*> definitions;
+
+    for (const auto& bb : fn.blocks()) {
+        for (const Instruction* instruction : bb->all_instrs()) {
+            if (Value* result = instruction->result()) {
+                if (!definitions.emplace(result, instruction).second) {
+                    errors.push_back({0, "value has multiple defining instructions: " + result->name()});
+                }
+            }
+        }
+    }
+
+    for (const auto& bb : fn.blocks()) {
+        BasicBlock* block = bb.get();
+        if (block == fn.entry_block() && !block->phis().empty()) {
+            errors.push_back({0, "entry block must not contain phi instructions"});
+        }
+
+        std::unordered_set<Label*> expected_pred_labels;
+        for (BasicBlock* pred : cfg.predecessors(block)) {
+            expected_pred_labels.insert(pred->label());
+        }
+
+        for (const auto& phi_ptr : block->phis()) {
+            auto* phi = dynamic_cast<const PhiInstr*>(phi_ptr.get());
+            if (phi == nullptr) continue;
+
+            std::unordered_set<Label*> actual_pred_labels;
+            for (const auto& incoming : phi->incoming()) {
+                if (incoming.predecessor == nullptr) {
+                    errors.push_back({0, "phi incoming predecessor is null"});
+                    continue;
+                }
+                if (incoming.value == nullptr) {
+                    errors.push_back({0, "phi incoming value is null"});
+                }
+                if (!actual_pred_labels.insert(incoming.predecessor).second) {
+                    errors.push_back({0, "phi has duplicate incoming predecessor: "
+                        + incoming.predecessor->name()});
+                }
+            }
+
+            for (Label* expected : expected_pred_labels) {
+                if (actual_pred_labels.count(expected) == 0) {
+                    errors.push_back({0, "phi is missing incoming predecessor: "
+                        + expected->name()});
+                }
+            }
+            for (Label* actual : actual_pred_labels) {
+                if (expected_pred_labels.count(actual) == 0) {
+                    errors.push_back({0, "phi incoming predecessor is not a CFG predecessor: "
+                        + actual->name()});
                 }
             }
         }

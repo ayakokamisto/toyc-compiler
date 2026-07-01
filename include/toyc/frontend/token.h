@@ -23,6 +23,7 @@ enum class TokenKind : uint8_t {
     KwBreak,
     KwContinue,
     KwVoid,
+    KwConst,
 
     // Delimiters
     LParen,
@@ -95,6 +96,7 @@ constexpr std::string_view token_kind_name(TokenKind k) {
     case K::BangEqual:       return "BangEqual";
     case K::AmpAmp:          return "AmpAmp";
     case K::KwVoid:         return "KwVoid";
+    case K::KwConst:        return "KwConst";
     case K::Comma:          return "Comma";
     case K::PipePipe:        return "PipePipe";
     }
