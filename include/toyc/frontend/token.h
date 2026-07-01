@@ -1,76 +1,102 @@
 #pragma once
-/// Token definitions for the ToyC lexer.
-
-#include "toyc/support/source_location.h"
 
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-namespace toyc {
+// =============================================================================
+// Token — lexer token for the P1 Toy-C subset.
+// =============================================================================
 
-/// Token kind enumeration — covers all ToyC tokens from 词汇翻译表.md.
 enum class TokenKind : uint8_t {
-  // Keywords
-  KW_CONST,
-  KW_INT,
-  KW_VOID,
-  KW_IF,
-  KW_ELSE,
-  KW_WHILE,
-  KW_BREAK,
-  KW_CONTINUE,
-  KW_RETURN,
+    // Special
+    Eof,
+    Identifier,
+    IntegerLiteral,
 
-  // Identifiers & literals
-  IDENT,
-  NUMBER,
+    // Keywords
+    KwInt,
+    KwReturn,
+    KwIf,
+    KwElse,
+    KwWhile,
+    KwBreak,
+    KwContinue,
+    KwVoid,
 
-  // Operators
-  ASSIGN,     // =
-  OR,         // ||
-  AND,        // &&
-  LT,         // <
-  LE,         // <=
-  GT,         // >
-  GE,         // >=
-  EQ,         // ==
-  NE,         // !=
-  PLUS,       // +
-  MINUS,      // -
-  MUL,        // *
-  DIV,        // /
-  MOD,        // %
-  NOT,        // !
+    // Delimiters
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    Semicolon,
+    Comma,
 
-  // Delimiters
-  SEMICOLON,  // ;
-  LBRACE,     // {
-  RBRACE,     // }
-  LPAREN,     // (
-  RPAREN,     // )
-  COMMA,      // ,
-
-  // Special
-  END_OF_FILE,
-  INVALID,
+    Equal,
+    // Operators
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Bang,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+    EqualEqual,
+    BangEqual,
+    AmpAmp,
+    PipePipe,
 };
 
-/// Convert a TokenKind to its string name.
-std::string_view tokenKindName(TokenKind kind);
+struct SourceLocation {
+    int line = 1;
+    int column = 1;
+};
 
-/// Check if a TokenKind is a keyword.
-bool isKeyword(TokenKind kind);
-
-/// A single token produced by the lexer.
 struct Token {
-  TokenKind kind = TokenKind::INVALID;
-  std::string rawLexeme;      ///< Original text from source.
-  SourceRange range;           ///< Location in source.
-
-  Token() = default;
-  Token(TokenKind k, std::string lexeme, SourceRange r)
-      : kind(k), rawLexeme(std::move(lexeme)), range(r) {}
+    TokenKind kind = TokenKind::Eof;
+    std::string lexeme;
+    SourceLocation location;
+    uint64_t int_value = 0;  // for IntegerLiteral
 };
 
-} // namespace toyc
+constexpr std::string_view token_kind_name(TokenKind k) {
+    using K = TokenKind;
+    switch (k) {
+    case K::Eof:             return "EOF";
+    case K::Identifier:      return "Identifier";
+    case K::IntegerLiteral:  return "IntegerLiteral";
+    case K::KwInt:           return "KwInt";
+    case K::KwReturn:        return "KwReturn";
+    case K::LParen:          return "LParen";
+    case K::RParen:          return "RParen";
+    case K::LBrace:          return "LBrace";
+    case K::RBrace:          return "RBrace";
+    case K::Semicolon:       return "Semicolon";
+    case K::Plus:            return "Plus";
+    case K::Minus:           return "Minus";
+    case K::Star:            return "Star";
+    case K::Slash:           return "Slash";
+    case K::Percent:         return "Percent";
+    case K::Bang:            return "Bang";
+    case K::Equal:          return "Equal";
+    case K::KwIf:            return "KwIf";
+    case K::KwElse:          return "KwElse";
+    case K::KwWhile:         return "KwWhile";
+    case K::KwBreak:         return "KwBreak";
+    case K::KwContinue:      return "KwContinue";
+    case K::Less:            return "Less";
+    case K::Greater:         return "Greater";
+    case K::LessEqual:       return "LessEqual";
+    case K::GreaterEqual:    return "GreaterEqual";
+    case K::EqualEqual:      return "EqualEqual";
+    case K::BangEqual:       return "BangEqual";
+    case K::AmpAmp:          return "AmpAmp";
+    case K::KwVoid:         return "KwVoid";
+    case K::Comma:          return "Comma";
+    case K::PipePipe:        return "PipePipe";
+    }
+    return "Unknown";
+}

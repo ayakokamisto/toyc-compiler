@@ -1,0 +1,5 @@
+if(EXISTS "E:/TOYC/artifacts/independent_audit/build_cpp/ir_builder_test[1]_tests.cmake")
+  include("E:/TOYC/artifacts/independent_audit/build_cpp/ir_builder_test[1]_tests.cmake")
+else()
+  add_test(ir_builder_test_NOT_BUILT ir_builder_test_NOT_BUILT)
+endif()

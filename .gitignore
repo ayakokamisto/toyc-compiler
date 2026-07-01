@@ -28,6 +28,15 @@ coverage/
 /tools/
 !/tools/
 /tools/*
+!/tools/triple_diff/
+!/tools/triple_diff/**
+/tools/triple_diff/reports/runtime/*
+!/tools/triple_diff/reports/runtime/.gitkeep
+!/tools/triple_diff/cases/
+!/tools/triple_diff/cases/**
+/tools/triple_diff/cases/*.s
+/tools/triple_diff/cases/*.elf
+/tools/triple_diff/cases/*.log
 !/tools/src_backend_regression/
 !/tools/src_backend_regression/**
 /tools/src_backend_regression/reports/*.s

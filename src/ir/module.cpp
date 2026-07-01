@@ -1,74 +1,39 @@
-/// Module implementation for ToyC Canonical Slot IR.
-
 #include "toyc/ir/module.h"
 
-namespace toyc {
-
-Module::Module(Module&& other) noexcept
-    : funcs_(std::move(other.funcs_)),
-      globals_(std::move(other.globals_)),
-      nextFuncId_(other.nextFuncId_),
-      nextGlobalId_(other.nextGlobalId_),
-      nextValueId_(other.nextValueId_),
-      nextSlotId_(other.nextSlotId_),
-      nextBlockId_(other.nextBlockId_) {
-  // Rebind all Function pointers to this (the new Module address).
-  for (auto& f : funcs_) {
-    f->rebindParentModule(this);
-  }
-}
-
-Module& Module::operator=(Module&& other) noexcept {
-  if (this != &other) {
-    funcs_ = std::move(other.funcs_);
-    globals_ = std::move(other.globals_);
-    nextFuncId_ = other.nextFuncId_;
-    nextGlobalId_ = other.nextGlobalId_;
-    nextValueId_ = other.nextValueId_;
-    nextSlotId_ = other.nextSlotId_;
-    nextBlockId_ = other.nextBlockId_;
-    // Rebind all Function pointers to this.
-    for (auto& f : funcs_) {
-      f->rebindParentModule(this);
+void Module::add_function(std::unique_ptr<Function> fn) {
+    if (fn->name() == "main") {
+        main_ = fn.get();
     }
-  }
-  return *this;
+    functions_.push_back(std::move(fn));
 }
 
-Function* Module::createFunction(std::string name, IRType returnType) {
-  FunctionId fid(nextFuncId_++);
-  auto func = std::make_unique<Function>(fid, std::move(name), returnType, this);
-  auto* ptr = func.get();
-  funcs_.push_back(std::move(func));
-  return ptr;
+void Module::add_global(GlobalVar* gv) {
+    globals_.push_back(gv);
 }
 
-GlobalId Module::createGlobal(IRGlobal global) {
-  GlobalId gid(nextGlobalId_++);
-  global.id = gid;
-  globals_.push_back(std::move(global));
-  return gid;
+void Module::add_global_constant(Constant* c) {
+    global_constants_.push_back(c);
 }
 
-const IRGlobal* Module::findGlobal(GlobalId id) const {
-  for (const auto& g : globals_) {
-    if (g.id == id) return &g;
-  }
-  return nullptr;
+GlobalVar* Module::new_global_var(const std::string& name, int32_t initial_value) {
+    auto gv = std::make_unique<GlobalVar>(name, initial_value);
+    auto* raw = gv.get();
+    owned_values_.push_back(std::move(gv));
+    globals_.push_back(raw);
+    return raw;
 }
 
-const Function* Module::findFunction(FunctionId id) const {
-  for (const auto& f : funcs_) {
-    if (f->id() == id) return f.get();
-  }
-  return nullptr;
+Constant* Module::new_global_constant(const std::string& name, int32_t value) {
+    auto c = std::unique_ptr<Constant>(Constant::named(next_global_const_id_++, name, value));
+    auto* raw = c.get();
+    owned_values_.push_back(std::move(c));
+    global_constants_.push_back(raw);
+    return raw;
 }
 
-Function* Module::findFunctionByName(const std::string& name) {
-  for (auto& f : funcs_) {
-    if (f->name() == name) return f.get();
-  }
-  return nullptr;
+Constant* Module::new_constant(int32_t value) {
+    auto c = std::unique_ptr<Constant>(Constant::of(next_global_const_id_++, value));
+    auto* raw = c.get();
+    owned_values_.push_back(std::move(c));
+    return raw;
 }
-
-} // namespace toyc

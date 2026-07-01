@@ -1,0 +1,5 @@
+if(EXISTS "E:/TOYC/artifacts/independent_audit/build_r1/lexer_test[1]_tests.cmake")
+  include("E:/TOYC/artifacts/independent_audit/build_r1/lexer_test[1]_tests.cmake")
+else()
+  add_test(lexer_test_NOT_BUILT lexer_test_NOT_BUILT)
+endif()

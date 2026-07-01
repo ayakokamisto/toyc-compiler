@@ -1,70 +1,63 @@
 #pragma once
-/// BasicBlock — a straight-line sequence of instructions ending with a terminator.
-///
-/// Each block has a unique BlockId and label, a list of ordinary instructions,
-/// exactly one terminator, and predecessor/successor edges maintained by rebuildCFG().
 
-#include "toyc/ir/instruction.h"
-#include "toyc/support/ids.h"
+#include "instruction.h"
 
+#include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 
-namespace toyc {
+// =============================================================================
+// BasicBlock — a single basic block in the CFG.
+//
+// Contains phi instructions, a body of non-phi non-terminator instructions,
+// and exactly one terminator.
+//
+// Owns all instructions via std::unique_ptr<Instr>.
+// Does NOT own its Label (owned by Function's value arena).
+// Does NOT store a parent Function pointer (matching Java semantics).
+// =============================================================================
 
-class Function;
+using InstrPtr = std::unique_ptr<Instr>;
 
-/// A basic block: a sequence of instructions with a single entry and exit.
 class BasicBlock {
 public:
-  explicit BasicBlock(BlockId id, std::string label = "");
+    explicit BasicBlock(Label* label);
 
-  [[nodiscard]] BlockId id() const { return id_; }
-  [[nodiscard]] const std::string& label() const { return label_; }
+    // Non-copyable.
+    BasicBlock(const BasicBlock&) = delete;
+    BasicBlock& operator=(const BasicBlock&) = delete;
+    BasicBlock(BasicBlock&&) = default;
+    BasicBlock& operator=(BasicBlock&&) = default;
 
-  /// Ordinary instructions (not including the terminator).
-  [[nodiscard]] const std::vector<std::unique_ptr<Inst>>& instructions() const {
-    return insts_;
-  }
-  [[nodiscard]] std::vector<std::unique_ptr<Inst>>& mutableInstructions() { return insts_; }
+    Label* label() const { return label_; }
 
-  /// Append an ordinary instruction. Returns a raw pointer to the appended inst.
-  /// Must not be called after a terminator has been set.
-  Inst* appendInst(std::unique_ptr<Inst> inst);
-  Inst* prependPhi(std::unique_ptr<Inst> inst);
+    // --- Phi access ---
+    const std::vector<InstrPtr>& phis() const { return phis_; }
+    void add_phi(InstrPtr phi);
+    void clear_phis();
 
-  /// The terminator (Br, CondBr, or Ret). Null if not yet set.
-  [[nodiscard]] const Terminator* terminator() const { return term_ ? &*term_ : nullptr; }
-  [[nodiscard]] Terminator* mutableTerminator() { return term_ ? &*term_ : nullptr; }
-  [[nodiscard]] bool hasTerminator() const { return term_.has_value(); }
+    // --- Body instructions (non-phi, non-terminator) ---
+    const std::vector<InstrPtr>& instructions() const { return instrs_; }
+    void add_instruction(InstrPtr instr);
+    void insert_instruction(size_t index, InstrPtr instr);
+    void replace_body(std::vector<InstrPtr> new_instrs);
 
-  /// Set the terminator. Must not be called twice.
-  void setTerminator(Terminator term);
-  void clearTerminator();
+    // --- Terminator ---
+    Instr* terminator() const { return terminator_.get(); }
+    void set_terminator(InstrPtr term);
+    bool is_terminated() const { return terminator_ != nullptr; }
 
-  /// CFG edges — set by rebuildCFG(), not by lowering.
-  [[nodiscard]] const std::vector<BlockId>& successors() const { return succs_; }
-  [[nodiscard]] const std::vector<BlockId>& predecessors() const { return preds_; }
-
-  /// Parent function.
-  [[nodiscard]] FunctionId parentFunction() const { return parentFunc_; }
-  void setParentFunction(FunctionId f) { parentFunc_ = f; }
+    // --- Combined iteration ---
+    // Flat vector of all instructions in order: phis → body → terminator.
+    // Each element is a raw pointer; ownership stays in the block.
+    std::vector<Instr*> all_instrs() const;
 
 private:
-  BlockId id_;
-  std::string label_;
-  FunctionId parentFunc_;
-  std::vector<std::unique_ptr<Inst>> insts_;
-  std::optional<Terminator> term_;
-  std::vector<BlockId> succs_;
-  std::vector<BlockId> preds_;
-
-  // Only rebuildCFG() should modify edges.
-  friend void rebuildCFG(Function& func);
-  void clearEdges();
-  void addSuccessor(BlockId b);
-  void addPredecessor(BlockId b);
+    Label* label_;
+    std::vector<InstrPtr> phis_;
+    std::vector<InstrPtr> instrs_;
+    InstrPtr terminator_;
 };
 
-} // namespace toyc
+// Block ID type for CFG mappings.
+using BlockId = BasicBlock*;

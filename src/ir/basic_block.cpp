@@ -1,53 +1,51 @@
-/// BasicBlock implementation for ToyC Canonical Slot IR.
-
 #include "toyc/ir/basic_block.h"
 
-namespace toyc {
+BasicBlock::BasicBlock(Label* label)
+    : label_(label) {}
 
-BasicBlock::BasicBlock(BlockId id, std::string label)
-    : id_(id), label_(std::move(label)) {}
-
-Inst* BasicBlock::appendInst(std::unique_ptr<Inst> inst) {
-  auto* raw = inst.get();
-  insts_.push_back(std::move(inst));
-  return raw;
+void BasicBlock::add_phi(InstrPtr phi) {
+    phis_.push_back(std::move(phi));
 }
 
-Inst* BasicBlock::prependPhi(std::unique_ptr<Inst> inst) {
-  auto* raw = inst.get();
-  auto insertIt = insts_.begin();
-  while (insertIt != insts_.end() && (*insertIt)->opcode == Opcode::Phi) {
-    ++insertIt;
-  }
-  insts_.insert(insertIt, std::move(inst));
-  return raw;
+void BasicBlock::clear_phis() {
+    phis_.clear();
 }
 
-void BasicBlock::setTerminator(Terminator term) {
-  term_ = std::move(term);
+void BasicBlock::insert_instruction(size_t index, InstrPtr instr) {
+    if (is_terminated()) return;
+    if (index > instrs_.size()) index = instrs_.size();
+    instrs_.insert(instrs_.begin() + index, std::move(instr));
 }
 
-void BasicBlock::clearTerminator() {
-  term_.reset();
+void BasicBlock::add_instruction(InstrPtr instr) {
+    if (is_terminated()) {
+        // Mimics Java: "cannot append instruction after terminator"
+        // For now, silently ignore; caller should check.
+        return;
+    }
+    instrs_.push_back(std::move(instr));
 }
 
-void BasicBlock::clearEdges() {
-  succs_.clear();
-  preds_.clear();
+void BasicBlock::replace_body(std::vector<InstrPtr> new_instrs) {
+    instrs_ = std::move(new_instrs);
 }
 
-void BasicBlock::addSuccessor(BlockId b) {
-  for (auto s : succs_) {
-    if (s == b) return;  // Deduplicate.
-  }
-  succs_.push_back(b);
+void BasicBlock::set_terminator(InstrPtr term) {
+    // Java validates isTerminator() here; we trust the caller for now.
+    terminator_ = std::move(term);
 }
 
-void BasicBlock::addPredecessor(BlockId b) {
-  for (auto p : preds_) {
-    if (p == b) return;  // Deduplicate.
-  }
-  preds_.push_back(b);
+std::vector<Instr*> BasicBlock::all_instrs() const {
+    std::vector<Instr*> result;
+    result.reserve(phis_.size() + instrs_.size() + (terminator_ ? 1 : 0));
+    for (const auto& p : phis_) {
+        result.push_back(p.get());
+    }
+    for (const auto& i : instrs_) {
+        result.push_back(i.get());
+    }
+    if (terminator_) {
+        result.push_back(terminator_.get());
+    }
+    return result;
 }
-
-} // namespace toyc

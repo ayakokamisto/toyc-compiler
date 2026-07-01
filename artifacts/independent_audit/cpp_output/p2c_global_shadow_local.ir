@@ -1,0 +1,13 @@
+module {
+  global @g = 7
+}
+
+func @main() -> i32 {
+  local %g.0
+entry.0:
+  %g.0 = alloca
+  %t0 = imm 42
+  store %t0, %g.0
+  %t1 = load %g.0
+  ret %t1
+}

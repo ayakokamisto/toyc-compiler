@@ -1,0 +1,10 @@
+﻿
+   Id ProcessName Path                                                     
+   -- ----------- ----                                                     
+31300 java        D:\jdk-21.0.6+7\bin\java.exe                             
+27344 powershell  C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+27988 powershell  C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+24600 wsl         C:\WINDOWS\system32\wsl.exe                              
+27416 wsl         C:\Program Files\WSL\wsl.exe                             
+
+

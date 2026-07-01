@@ -1,0 +1,25 @@
+module {
+}
+
+func @main() -> i32 {
+  local %logic.slot.0
+entry.0:
+  %logic.slot.0 = alloca
+  %t0 = imm 0
+  store %t0, %logic.slot.0
+  %t1 = imm 3
+  %t2 = imm 4
+  %t3 = cmp lt %t1, %t2
+  %t4 = cmp ne %t3, 0
+  cbr %t4, land.rhs.1, land.end.2
+land.rhs.1:
+  %t5 = imm 5
+  %t6 = imm 6
+  %t7 = cmp ne %t5, %t6
+  %t8 = cmp ne %t7, 0
+  store %t8, %logic.slot.0
+  br land.end.2
+land.end.2:
+  %t9 = load %logic.slot.0
+  ret %t9
+}

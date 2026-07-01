@@ -1,0 +1,5 @@
+if(EXISTS "E:/TOYC/artifacts/independent_audit/build_r1/parser_test[1]_tests.cmake")
+  include("E:/TOYC/artifacts/independent_audit/build_r1/parser_test[1]_tests.cmake")
+else()
+  add_test(parser_test_NOT_BUILT parser_test_NOT_BUILT)
+endif()

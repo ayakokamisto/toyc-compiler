@@ -1,0 +1,3 @@
+/mnt/e/TOYC/artifacts/independent_audit/cpp_output/p2_forward9.s: Assembler messages:
+/mnt/e/TOYC/artifacts/independent_audit/cpp_output/p2_forward9.s:86: Error: symbol `entry.0' is already defined
+/mnt/e/TOYC/artifacts/independent_audit/cpp_output/p2_forward9.s:148: Error: symbol `entry.0' is already defined

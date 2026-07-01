@@ -1,92 +1,57 @@
-/// Function implementation for ToyC Canonical Slot IR.
-
 #include "toyc/ir/function.h"
-#include "toyc/ir/module.h"
 
-#include <algorithm>
-#include <stdexcept>
+Function::Function(std::string name, Type return_type,
+                   std::vector<LocalVar*> params, std::string entry_label_hint)
+    : name_(std::move(name)),
+      return_type_(return_type),
+      params_(std::move(params)) {
 
-namespace toyc {
+    // Create entry label and entry block.
+    auto* entry_label = new_label(entry_label_hint);
+    auto entry = std::make_unique<BasicBlock>(entry_label);
+    entry_block_ = entry.get();
+    blocks_.push_back(std::move(entry));
 
-Function::Function(FunctionId id, std::string name, IRType returnType, Module* parent)
-    : id_(id), name_(std::move(name)), returnType_(returnType), parentModule_(parent) {}
-
-BasicBlock* Function::createBlock(std::string label) {
-  BlockId bid = parentModule_->allocBlockId();
-  auto bb = std::make_unique<BasicBlock>(bid, label.empty() ? "block" + std::to_string(bid.value) : label);
-  bb->setParentFunction(id_);
-  auto* raw = bb.get();
-  blocks_.push_back(std::move(bb));
-  return raw;
+    for (auto* param : params_) {
+        local_map_[param->name()] = param;
+    }
 }
 
-bool Function::eraseBlock(BlockId block) {
-  auto oldSize = blocks_.size();
-  blocks_.erase(std::remove_if(blocks_.begin(), blocks_.end(), [&](const auto& bb) {
-                  return bb->id() == block;
-                }),
-                blocks_.end());
-  return blocks_.size() != oldSize;
+void Function::add_block(std::unique_ptr<BasicBlock> block) {
+    blocks_.push_back(std::move(block));
 }
 
-BasicBlock* Function::entryBlock() const {
-  return blocks_.empty() ? nullptr : blocks_.front().get();
+void Function::add_local(LocalVar* local) {
+    local_map_[local->name()] = local;
 }
 
-ParamInfo Function::addParam(SymbolId sym, std::string debugName) {
-  ValueId vid = createArgumentValue();
-  SlotId sid = createSlot(SlotKind::Parameter, sym, std::move(debugName));
-  ParamInfo info{sym, vid, sid};
-  params_.push_back(info);
-  return info;
+// --- Value arena factory methods ---
+
+Temp* Function::new_temp(Type type) {
+    auto t = std::make_unique<Temp>(next_temp_id_++, type);
+    auto* raw = t.get();
+    owned_values_.push_back(std::move(t));
+    return raw;
 }
 
-SlotId Function::createSlot(SlotKind kind, std::optional<SymbolId> sym, std::string debugName) {
-  SlotId sid = parentModule_->allocSlotId();
-  Slot slot;
-  slot.id = sid;
-  slot.type = I32Type;
-  slot.kind = kind;
-  slot.sourceSymbol = sym;
-  slot.debugName = std::move(debugName);
-  slots_.push_back(slot);
-  return sid;
+LocalVar* Function::new_local(const std::string& source_name, bool is_parameter) {
+    auto l = std::make_unique<LocalVar>(next_local_id_++, source_name, is_parameter);
+    auto* raw = l.get();
+    add_local(raw);
+    owned_values_.push_back(std::move(l));
+    return raw;
 }
 
-void Function::eraseSlots(const std::vector<SlotId>& slots) {
-  slots_.erase(std::remove_if(slots_.begin(), slots_.end(), [&](const Slot& slot) {
-                 return std::find(slots.begin(), slots.end(), slot.id) != slots.end();
-               }),
-               slots_.end());
+Label* Function::new_label(const std::string& hint) {
+    auto lbl = std::make_unique<Label>(hint + "." + std::to_string(next_label_id_++));
+    auto* raw = lbl.get();
+    owned_values_.push_back(std::move(lbl));
+    return raw;
 }
 
-void Function::eraseValues(const std::vector<ValueId>& values) {
-  values_.erase(std::remove_if(values_.begin(), values_.end(), [&](const Value& value) {
-                  return std::find(values.begin(), values.end(), value.id) != values.end();
-                }),
-                values_.end());
+Constant* Function::new_constant(int32_t value) {
+    auto c = std::unique_ptr<Constant>(Constant::of(next_const_id_++, value));
+    auto* raw = c.get();
+    owned_values_.push_back(std::move(c));
+    return raw;
 }
-
-ValueId Function::createArgumentValue() {
-  ValueId vid = parentModule_->allocValueId();
-  Value val;
-  val.id = vid;
-  val.type = I32Type;
-  val.source = ValueSource::Argument;
-  val.sourceIndex = static_cast<uint32_t>(params_.size());
-  values_.push_back(val);
-  return vid;
-}
-
-ValueId Function::createInstValue() {
-  ValueId vid = parentModule_->allocValueId();
-  Value val;
-  val.id = vid;
-  val.type = I32Type;
-  val.source = ValueSource::InstructionResult;
-  val.sourceIndex = 0;
-  values_.push_back(val);
-  return vid;
-}
-
-} // namespace toyc

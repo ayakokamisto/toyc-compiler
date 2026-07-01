@@ -1,0 +1,20 @@
+module {
+}
+
+func @main() -> i32 {
+  local %x.1
+  local %x.0
+entry.0:
+  %x.0 = alloca
+  %x.1 = alloca
+  %t0 = imm 2
+  store %t0, %x.0
+  %t1 = imm 7
+  store %t1, %x.1
+  %t2 = load %x.1
+  %t3 = imm 1
+  %t4 = add %t2, %t3
+  store %t4, %x.1
+  %t5 = load %x.0
+  ret %t5
+}

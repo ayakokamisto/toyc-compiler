@@ -1,0 +1,5 @@
+if(EXISTS "E:/TOYC/artifacts/independent_audit/build_cpp/riscv_emitter_test[1]_tests.cmake")
+  include("E:/TOYC/artifacts/independent_audit/build_cpp/riscv_emitter_test[1]_tests.cmake")
+else()
+  add_test(riscv_emitter_test_NOT_BUILT riscv_emitter_test_NOT_BUILT)
+endif()

@@ -1,315 +1,218 @@
-/// Lexer implementation — P1 real scanning.
-
 #include "toyc/frontend/lexer.h"
 
-#include <algorithm>
-#include <ostream>
+#include <cctype>
 #include <sstream>
-#include <unordered_map>
 
-namespace toyc {
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Lexer
-// ═══════════════════════════════════════════════════════════════════════════
-
-static const std::unordered_map<std::string_view, TokenKind> kKeywords = {
-    {"const",    TokenKind::KW_CONST},
-    {"int",      TokenKind::KW_INT},
-    {"void",     TokenKind::KW_VOID},
-    {"if",       TokenKind::KW_IF},
-    {"else",     TokenKind::KW_ELSE},
-    {"while",    TokenKind::KW_WHILE},
-    {"break",    TokenKind::KW_BREAK},
-    {"continue", TokenKind::KW_CONTINUE},
-    {"return",   TokenKind::KW_RETURN},
-};
-
-Lexer::Lexer(std::string_view source, DiagnosticEngine& diag)
-    : source_(source), diag_(diag) {}
-
-char Lexer::peek() const noexcept {
-  if (pos_ >= source_.size()) return '\0';
-  return source_[pos_];
-}
-
-char Lexer::peekAt(std::size_t offset) const noexcept {
-  auto idx = pos_ + offset;
-  if (idx >= source_.size()) return '\0';
-  return source_[idx];
-}
-
-char Lexer::advance() noexcept {
-  char ch = peek();
-  if (ch == '\0') return ch;
-  ++pos_;
-  if (ch == '\n') {
-    ++line_;
-    col_ = 1;
-  } else if (ch == '\r') {
-    ++line_;
-    col_ = 1;
-    if (peek() == '\n') {
-      ++pos_;
-    }
-  } else {
-    ++col_;
-  }
-  return ch;
-}
-
-bool Lexer::atEnd() const noexcept {
-  return pos_ >= source_.size();
-}
-
-SourceLocation Lexer::currentLoc() const noexcept {
-  return SourceLocation{static_cast<uint32_t>(pos_), line_, col_};
-}
-
-bool Lexer::tokenize(std::vector<Token>& out) {
-  while (!atEnd()) {
-    skipWhitespaceAndComments();
-    if (atEnd()) break;
-
-    char ch = peek();
-
-    if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_') {
-      out.push_back(lexIdentifierOrKeyword());
-    } else if (std::isdigit(static_cast<unsigned char>(ch))) {
-      out.push_back(lexNumber());
-    } else {
-      out.push_back(lexOperatorOrPunctuation());
-    }
-  }
-
-  auto eofLoc = currentLoc();
-  out.emplace_back(TokenKind::END_OF_FILE, "",
-                   SourceRange{eofLoc, eofLoc});
-
-  return !hasError_;
-}
+Lexer::Lexer(std::string_view source)
+    : source_(source) {}
 
 std::vector<Token> Lexer::tokenize() {
-  std::vector<Token> tokens;
-  tokenize(tokens);
-  return tokens;
+    skip_whitespace_and_comments();
+    while (!is_at_end()) {
+        char c = peek();
+        if (std::isalpha(c) || c == '_') {
+            tokens_.push_back(lex_identifier_or_keyword());
+        } else if (std::isdigit(c)) {
+            tokens_.push_back(lex_integer_literal());
+        } else {
+            tokens_.push_back(lex_operator_or_delimiter());
+        }
+        skip_whitespace_and_comments();
+    }
+    Token eof;
+    eof.kind = TokenKind::Eof;
+    eof.location = {line_, column_};
+    tokens_.push_back(eof);
+    return tokens_;
 }
 
-Token Lexer::lexIdentifierOrKeyword() {
-  auto begin = currentLoc();
-  std::size_t start = pos_;
+// --- Helpers ---
 
-  while (!atEnd()) {
-    char ch = peek();
-    if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_') {
-      advance();
+char Lexer::peek() const {
+    if (is_at_end()) return '\0';
+    return source_[pos_];
+}
+
+char Lexer::advance() {
+    char c = source_[pos_++];
+    column_++;
+    return c;
+}
+
+bool Lexer::match(char expected) {
+    if (is_at_end() || source_[pos_] != expected) return false;
+    pos_++;
+    column_++;
+    return true;
+}
+
+bool Lexer::is_at_end() const {
+    return pos_ >= source_.size();
+}
+
+void Lexer::skip_whitespace_and_comments() {
+    while (!is_at_end()) {
+        char c = peek();
+        if (c == ' ' || c == '\t' || c == '\r') {
+            advance();
+        } else if (c == '\n') {
+            advance();
+            line_++;
+            column_ = 1;
+        } else if (c == '/') {
+            if (pos_ + 1 < source_.size() && source_[pos_ + 1] == '/') {
+                // Single-line comment: skip to end of line
+                while (!is_at_end() && peek() != '\n') advance();
+            } else if (pos_ + 1 < source_.size() && source_[pos_ + 1] == '*') {
+                // Block comment
+                advance(); advance(); // skip /*
+                while (!is_at_end()) {
+                    if (peek() == '\n') {
+                        advance();
+                        line_++;
+                        column_ = 1;
+                    } else if (peek() == '*' && pos_ + 1 < source_.size() && source_[pos_ + 1] == '/') {
+                        advance(); advance(); // skip */
+                        break;
+                    } else {
+                        advance();
+                    }
+                }
+            } else {
+                break; // not a comment, treat as operator
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+Token Lexer::lex_identifier_or_keyword() {
+    Token tok;
+    tok.location = {line_, column_};
+    size_t start = pos_;
+    while (!is_at_end() && (std::isalnum(peek()) || peek() == '_')) {
+        advance();
+    }
+    tok.lexeme = source_.substr(start, pos_ - start);
+
+    if (tok.lexeme == "int") {
+        tok.kind = TokenKind::KwInt;
+    } else if (tok.lexeme == "return") {
+        tok.kind = TokenKind::KwReturn;
+    } else if (tok.lexeme == "if") {
+        tok.kind = TokenKind::KwIf;
+    } else if (tok.lexeme == "else") {
+        tok.kind = TokenKind::KwElse;
+    } else if (tok.lexeme == "while") {
+        tok.kind = TokenKind::KwWhile;
+    } else if (tok.lexeme == "break") {
+        tok.kind = TokenKind::KwBreak;
+    } else if (tok.lexeme == "void") {
+        tok.kind = TokenKind::KwVoid;
+    } else if (tok.lexeme == "continue") {
+        tok.kind = TokenKind::KwContinue;
     } else {
-      break;
+        tok.kind = TokenKind::Identifier;
     }
-  }
-
-  std::string_view lexeme(source_.data() + start, pos_ - start);
-  auto end = currentLoc();
-
-  auto it = kKeywords.find(lexeme);
-  TokenKind kind = (it != kKeywords.end()) ? it->second : TokenKind::IDENT;
-
-  return Token(kind, std::string(lexeme), SourceRange{begin, end});
+    return tok;
 }
 
-Token Lexer::lexNumber() {
-  auto begin = currentLoc();
-  std::size_t start = pos_;
+Token Lexer::lex_integer_literal() {
+    Token tok;
+    tok.location = {line_, column_};
+    size_t start = pos_;
 
-  if (peek() == '0') {
-    advance();
-    if (!atEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
-      auto errLoc = begin;
-      while (!atEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
+    uint64_t value = 0;
+    while (!is_at_end() && std::isdigit(peek())) {
+        uint64_t digit = peek() - '0';
+        // Check for overflow before multiplying
+        if (value > (UINT64_MAX - digit) / 10) {
+            std::ostringstream msg;
+            msg << "integer literal exceeds uint64_t maximum at column " << column_;
+            throw LexError(line_, column_, msg.str());
+        }
+        value = value * 10 + digit;
         advance();
-      }
-      auto end = currentLoc();
-      std::string_view lexeme(source_.data() + start, pos_ - start);
-      diag_.error(errLoc, "invalid integer literal with leading zero: '" +
-                              std::string(lexeme) + "'");
-      hasError_ = true;
-      return Token(TokenKind::INVALID, std::string(lexeme),
-                   SourceRange{begin, end});
     }
-  } else {
-    advance();
-    while (!atEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
-      advance();
-    }
-  }
 
-  auto end = currentLoc();
-  std::string_view lexeme(source_.data() + start, pos_ - start);
-  return Token(TokenKind::NUMBER, std::string(lexeme),
-               SourceRange{begin, end});
+    tok.lexeme = source_.substr(start, pos_ - start);
+    tok.kind = TokenKind::IntegerLiteral;
+    tok.int_value = value;
+    return tok;
 }
 
-Token Lexer::lexOperatorOrPunctuation() {
-  auto begin = currentLoc();
-  char ch = advance();
-  auto singleEnd = currentLoc();
+Token Lexer::lex_operator_or_delimiter() {
+    Token tok;
+    tok.location = {line_, column_};
+    char c = advance();
 
-  switch (ch) {
-    case '|':
-      if (peek() == '|') {
-        advance();
-        return Token(TokenKind::OR, "||", SourceRange{begin, currentLoc()});
-      }
-      reportInvalidCharacter(ch, begin);
-      return Token(TokenKind::INVALID, std::string(1, ch),
-                   SourceRange{begin, singleEnd});
-
-    case '&':
-      if (peek() == '&') {
-        advance();
-        return Token(TokenKind::AND, "&&", SourceRange{begin, currentLoc()});
-      }
-      reportInvalidCharacter(ch, begin);
-      return Token(TokenKind::INVALID, std::string(1, ch),
-                   SourceRange{begin, singleEnd});
-
-    case '<':
-      if (peek() == '=') {
-        advance();
-        return Token(TokenKind::LE, "<=", SourceRange{begin, currentLoc()});
-      }
-      return Token(TokenKind::LT, "<", SourceRange{begin, singleEnd});
-
-    case '>':
-      if (peek() == '=') {
-        advance();
-        return Token(TokenKind::GE, ">=", SourceRange{begin, currentLoc()});
-      }
-      return Token(TokenKind::GT, ">", SourceRange{begin, singleEnd});
-
-    case '=':
-      if (peek() == '=') {
-        advance();
-        return Token(TokenKind::EQ, "==", SourceRange{begin, currentLoc()});
-      }
-      return Token(TokenKind::ASSIGN, "=", SourceRange{begin, singleEnd});
-
-    case '!':
-      if (peek() == '=') {
-        advance();
-        return Token(TokenKind::NE, "!=", SourceRange{begin, currentLoc()});
-      }
-      return Token(TokenKind::NOT, "!", SourceRange{begin, singleEnd});
+    switch (c) {
+    case '(': tok.kind = TokenKind::LParen; break;
+    case ')': tok.kind = TokenKind::RParen; break;
+    case '{': tok.kind = TokenKind::LBrace; break;
+    case '}': tok.kind = TokenKind::RBrace; break;
+    case ';': tok.kind = TokenKind::Semicolon; break;
+    case '+': tok.kind = TokenKind::Plus; break;
+    case '-': tok.kind = TokenKind::Minus; break;
+    case '*': tok.kind = TokenKind::Star; break;
+    case '%': tok.kind = TokenKind::Percent; break;
 
     case '/':
-      return Token(TokenKind::DIV, "/", SourceRange{begin, singleEnd});
+        // Should not reach here if comments are pre-skipped.
+        tok.kind = TokenKind::Slash;
+        break;
 
-    case '+': return Token(TokenKind::PLUS,     "+", SourceRange{begin, singleEnd});
-    case '-': return Token(TokenKind::MINUS,    "-", SourceRange{begin, singleEnd});
-    case '*': return Token(TokenKind::MUL,      "*", SourceRange{begin, singleEnd});
-    case '%': return Token(TokenKind::MOD,      "%", SourceRange{begin, singleEnd});
+    case '!':
+        if (match('=')) tok.kind = TokenKind::BangEqual;
+        else tok.kind = TokenKind::Bang;
+        break;
 
-    case ';': return Token(TokenKind::SEMICOLON, ";", SourceRange{begin, singleEnd});
-    case '{': return Token(TokenKind::LBRACE,    "{", SourceRange{begin, singleEnd});
-    case '}': return Token(TokenKind::RBRACE,    "}", SourceRange{begin, singleEnd});
-    case '(': return Token(TokenKind::LPAREN,    "(", SourceRange{begin, singleEnd});
-    case ')': return Token(TokenKind::RPAREN,    ")", SourceRange{begin, singleEnd});
-    case ',': return Token(TokenKind::COMMA,     ",", SourceRange{begin, singleEnd});
+    case '<':
+        if (match('=')) tok.kind = TokenKind::LessEqual;
+        else tok.kind = TokenKind::Less;
+        break;
 
-    default:
-      reportInvalidCharacter(ch, begin);
-      return Token(TokenKind::INVALID, std::string(1, ch),
-                   SourceRange{begin, singleEnd});
-  }
-}
+    case '>':
+        if (match('=')) tok.kind = TokenKind::GreaterEqual;
+        else tok.kind = TokenKind::Greater;
+        break;
 
-void Lexer::skipWhitespaceAndComments() {
-  while (!atEnd()) {
-    char ch = peek();
+    case '=':
+        if (match('=')) tok.kind = TokenKind::EqualEqual;
+        else tok.kind = TokenKind::Equal;
+        break;
 
-    if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
-      advance();
-      continue;
+    case '&':
+        if (match('&')) tok.kind = TokenKind::AmpAmp;
+        else {
+            throw LexError(line_, column_ - 1,
+                "unexpected character '&' (single '&' is not a valid operator)");
+        }
+        break;
+
+    case '|':
+        if (match('|')) tok.kind = TokenKind::PipePipe;
+        else {
+            throw LexError(line_, column_ - 1,
+                "unexpected character '|' (single '|' is not a valid operator)");
+        }
+        break;
+
+    case ',': tok.kind = TokenKind::Comma; break;
+    default: {
+        std::string c1(1, c);
+        throw LexError(line_, column_ - 1,
+            "unexpected character '" + c1 + "'");
+    }
     }
 
-    if (ch == '/') {
-      char next = peekAt(1);
-      if (next == '/') {
-        advance(); advance();
-        while (!atEnd() && peek() != '\n') {
-          advance();
-        }
-        continue;
-      }
-      if (next == '*') {
-        auto begin = currentLoc();
-        advance(); advance();
-        bool closed = false;
-        while (!atEnd()) {
-          if (peek() == '*' && peekAt(1) == '/') {
-            advance(); advance();
-            closed = true;
-            break;
-          }
-          advance();
-        }
-        if (!closed) {
-          reportUnterminatedBlockComment(begin);
-        }
-        continue;
-      }
-    }
-
-    break;
-  }
+    tok.lexeme = source_.substr(pos_ - 1 - (tok.kind == TokenKind::BangEqual ||
+                                             tok.kind == TokenKind::LessEqual ||
+                                             tok.kind == TokenKind::GreaterEqual ||
+                                             tok.kind == TokenKind::EqualEqual ||
+                                             tok.kind == TokenKind::AmpAmp ||
+                                             tok.kind == TokenKind::PipePipe ? 1 : 0),
+                                pos_ - (tok.location.column - 1));
+    return tok;
 }
-
-void Lexer::reportInvalidCharacter(char ch, SourceLocation where) {
-  std::ostringstream msg;
-  msg << "invalid character: '";
-  if (ch == '\'' || ch == '\\') {
-    msg << '\\' << ch;
-  } else if (ch >= 32 && ch < 127) {
-    msg << ch;
-  } else {
-    msg << "\\x" << std::hex << static_cast<int>(static_cast<unsigned char>(ch));
-  }
-  msg << "'";
-  diag_.error(where, msg.str());
-  hasError_ = true;
-}
-
-void Lexer::reportUnterminatedBlockComment(SourceLocation begin) {
-  diag_.error(begin, "unterminated block comment");
-  hasError_ = true;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Token dump
-// ═══════════════════════════════════════════════════════════════════════════
-
-static std::string escapeLexeme(const std::string& lexeme) {
-  std::string result;
-  result.reserve(lexeme.size());
-  for (char c : lexeme) {
-    switch (c) {
-      case '\n': result += "\\n"; break;
-      case '\r': result += "\\r"; break;
-      case '\t': result += "\\t"; break;
-      case '\\': result += "\\\\"; break;
-      case '\'': result += "\\'"; break;
-      default:   result += c; break;
-    }
-  }
-  return result;
-}
-
-void dumpTokens(std::span<const Token> tokens, std::ostream& out) {
-  for (const auto& tok : tokens) {
-    out << tok.range.begin.line << ":" << tok.range.begin.column
-        << " " << tokenKindName(tok.kind)
-        << " '" << escapeLexeme(tok.rawLexeme) << "'\n";
-  }
-}
-
-} // namespace toyc

@@ -1,0 +1,5 @@
+if(EXISTS "E:/TOYC/artifacts/independent_audit/build_r1/cfg_test[1]_tests.cmake")
+  include("E:/TOYC/artifacts/independent_audit/build_r1/cfg_test[1]_tests.cmake")
+else()
+  add_test(cfg_test_NOT_BUILT cfg_test_NOT_BUILT)
+endif()

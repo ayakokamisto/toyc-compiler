@@ -1,95 +1,77 @@
 #pragma once
-/// Function — a collection of basic blocks forming a callable unit.
-///
-/// Each function has:
-///   - A unique FunctionId and name.
-///   - A return type (I32 or Void).
-///   - Parameters with ValueIds for argument values and SlotIds for storage.
-///   - A list of Slots (parameter, local variable, temporary).
-///   - A list of BasicBlocks, the first of which is the entry block.
 
-#include "toyc/ir/basic_block.h"
-#include "toyc/ir/ir_type.h"
-#include "toyc/ir/value.h"
-#include "toyc/support/ids.h"
+#include "basic_block.h"
 
-#include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-namespace toyc {
+// =============================================================================
+// Function — a single function definition.
+//
+// Owns:
+//   - All BasicBlocks (unique_ptr)
+//   - All function-scoped Values (Temp, LocalVar, Label, Constant)
+//     via the owned_values_ arena.
+//
+// Provides factory methods (new_temp, new_local, etc.) that allocate a value
+// in the arena and return a raw pointer to it. The pointer remains valid for
+// the lifetime of this Function.
+// =============================================================================
 
-enum class IRForm : uint8_t {
-  CanonicalSlot,
-  SSA,
-};
-
-/// A parameter with its source symbol and IR value.
-struct ParamInfo {
-  SymbolId sourceSymbol;
-  ValueId valueId;
-  SlotId slotId;
-};
-
-class Module;  // Forward declaration — module.h includes function.h.
-
-/// A function in the IR module.
 class Function {
 public:
-  Function(FunctionId id, std::string name, IRType returnType, Module* parent);
+    // entry_label_hint is used to generate the entry block's label name
+    // (e.g. "main.entry" → "main.entry.N").
+    Function(std::string name, Type return_type, std::vector<LocalVar*> params,
+             std::string entry_label_hint = "entry");
 
-  [[nodiscard]] FunctionId id() const { return id_; }
-  [[nodiscard]] const std::string& name() const { return name_; }
-  [[nodiscard]] IRType returnType() const { return returnType_; }
-  [[nodiscard]] bool isInternal() const { return isInternal_; }
-  void setInternal(bool v) { isInternal_ = v; }
-  [[nodiscard]] IRForm form() const noexcept { return form_; }
-  void setForm(IRForm form) noexcept { form_ = form; }
+    const std::string& name() const { return name_; }
+    Type return_type() const { return return_type_; }
+    const std::vector<LocalVar*>& parameters() const { return params_; }
+    void set_parameters(const std::vector<LocalVar*>& p) { params_ = p; }
 
-  /// Basic blocks.
-  [[nodiscard]] const std::vector<std::unique_ptr<BasicBlock>>& blocks() const { return blocks_; }
-  [[nodiscard]] std::vector<std::unique_ptr<BasicBlock>>& mutableBlocks() { return blocks_; }
-  BasicBlock* createBlock(std::string label = "");
-  bool eraseBlock(BlockId block);
+    // --- Blocks ---
+    BasicBlock* entry_block() const { return entry_block_; }
+    const std::vector<std::unique_ptr<BasicBlock>>& blocks() const { return blocks_; }
+    void add_block(std::unique_ptr<BasicBlock> block);
 
-  /// Entry block (first block created).
-  [[nodiscard]] BasicBlock* entryBlock() const;
+    // --- Locals ---
+    const std::unordered_map<std::string, LocalVar*>& locals() const { return local_map_; }
+    void add_local(LocalVar* local);
 
-  /// Parameters.
-  [[nodiscard]] const std::vector<ParamInfo>& params() const { return params_; }
+    // --- Value arena ---
+    // These allocate a new Value in the arena and return a raw pointer.
+    // The arena owns the value's lifetime.
 
-  /// Add a parameter. Creates the ArgumentValue and parameter Slot.
-  /// Returns the ParamInfo with assigned ValueId and SlotId.
-  ParamInfo addParam(SymbolId sym, std::string debugName = "");
+    Temp* new_temp(Type type);
+    LocalVar* new_local(const std::string& source_name, bool is_parameter);
+    Label* new_label(const std::string& hint);
+    Constant* new_constant(int32_t value);
 
-  /// Slots.
-  [[nodiscard]] const std::vector<Slot>& slots() const { return slots_; }
-  [[nodiscard]] std::vector<Slot>& mutableSlots() { return slots_; }
-  SlotId createSlot(SlotKind kind, std::optional<SymbolId> sym = std::nullopt,
-                    std::string debugName = "");
-  void eraseSlots(const std::vector<SlotId>& slots);
-
-  /// Values.
-  [[nodiscard]] const std::vector<Value>& values() const { return values_; }
-  void eraseValues(const std::vector<ValueId>& values);
-  ValueId createArgumentValue();
-  ValueId createInstValue();
-
-  /// Rebind the parent module pointer (used after Module move).
-  void rebindParentModule(Module* newParent) { parentModule_ = newParent; }
+    // --- Temp index tracking ---
+    uint32_t next_temp_index() const { return next_temp_id_; }
+    void set_next_temp_index(uint32_t n) { next_temp_id_ = n; }
 
 private:
-  FunctionId id_;
-  std::string name_;
-  IRType returnType_;
-  bool isInternal_ = false;
-  IRForm form_ = IRForm::CanonicalSlot;
-  Module* parentModule_;
-  std::vector<std::unique_ptr<BasicBlock>> blocks_;
-  std::vector<ParamInfo> params_;
-  std::vector<Slot> slots_;
-  std::vector<Value> values_;
-};
+    struct ValueDeleter {
+        void operator()(Value* v) { delete v; }
+    };
 
-} // namespace toyc
+    std::string name_;
+    Type return_type_;
+    std::vector<LocalVar*> params_;
+    std::vector<std::unique_ptr<BasicBlock>> blocks_;
+    BasicBlock* entry_block_;
+    std::unordered_map<std::string, LocalVar*> local_map_;
+
+    // Value arena: owns all Temp, LocalVar, Label, Constant values.
+    std::vector<std::unique_ptr<Value>> owned_values_;
+
+    // Counters for generating display names.
+    uint32_t next_temp_id_ = 0;
+    uint32_t next_local_id_ = 0;
+    uint32_t next_label_id_ = 0;
+    uint32_t next_const_id_ = 0;
+};

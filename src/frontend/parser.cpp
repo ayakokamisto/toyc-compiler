@@ -1,642 +1,341 @@
-/// Parser implementation — P2 recursive descent.
-
 #include "toyc/frontend/parser.h"
-
 #include <sstream>
 
-namespace toyc {
+ParseError::ParseError(int line, int column, const std::string& msg)
+    : std::runtime_error(msg), line(line), column(column) {}
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Construction
-// ═══════════════════════════════════════════════════════════════════════════
+Parser::Parser(const std::vector<Token>& tokens) : tokens_(tokens) {}
 
-Parser::Parser(std::span<const Token> tokens, DiagnosticEngine& diag)
-    : tokens_(tokens), diag_(diag) {
-  // Ensure we always have at least EOF.
-  if (tokens_.empty() || tokens_.back().kind != TokenKind::END_OF_FILE) {
-    // This shouldn't happen if Lexer is correct, but be safe.
-  }
+const Token& Parser::peek(size_t offset) const {
+    size_t idx = pos_ + offset;
+    return idx < tokens_.size() ? tokens_[idx] : tokens_.back();
+}
+const Token& Parser::consume() { return tokens_[pos_++]; }
+bool Parser::match(TokenKind k) { if (peek().kind == k) { consume(); return true; } return false; }
+const Token& Parser::expect(TokenKind k, const char* msg) {
+    if (peek().kind != k) error(msg); return consume();
+}
+void Parser::error(const std::string& msg) {
+    auto& t = peek();
+    std::ostringstream os;
+    os << t.location.line << ":" << t.location.column << ": error: " << msg;
+    throw ParseError(t.location.line, t.location.column, os.str());
 }
 
-std::unique_ptr<CompUnit> Parser::parse() {
-  return parseCompUnit();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Token navigation
-// ═══════════════════════════════════════════════════════════════════════════
-
-const Token& Parser::current() const noexcept {
-  if (pos_ >= tokens_.size()) return tokens_.back();
-  return tokens_[pos_];
-}
-
-const Token& Parser::previous() const noexcept {
-  if (pos_ == 0) return tokens_[0];
-  return tokens_[pos_ - 1];
-}
-
-const Token& Parser::advance() noexcept {
-  if (!atEnd()) ++pos_;
-  return previous();
-}
-
-bool Parser::atEnd() const noexcept {
-  return pos_ >= tokens_.size() || current().kind == TokenKind::END_OF_FILE;
-}
-
-bool Parser::check(TokenKind kind) const noexcept {
-  return current().kind == kind;
-}
-
-bool Parser::match(TokenKind kind) noexcept {
-  if (check(kind)) {
-    advance();
-    return true;
-  }
-  return false;
-}
-
-bool Parser::matchAny(std::initializer_list<TokenKind> kinds) noexcept {
-  for (auto k : kinds) {
-    if (check(k)) {
-      advance();
-      return true;
-    }
-  }
-  return false;
-}
-
-const Token& Parser::expect(TokenKind kind, std::string_view description) {
-  if (check(kind)) {
-    return advance();
-  }
-  std::ostringstream msg;
-  msg << "expected " << description << ", got " << tokenKindName(current().kind);
-  if (!current().rawLexeme.empty() && current().kind != TokenKind::END_OF_FILE) {
-    msg << " '" << current().rawLexeme << "'";
-  }
-  diag_.error(current().range.begin, msg.str());
-  hasError_ = true;
-  // Return current token without advancing — caller decides recovery.
-  return current();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Error recovery
-// ═══════════════════════════════════════════════════════════════════════════
-
-void Parser::reportUnexpected(std::string_view expected) {
-  std::ostringstream msg;
-  msg << "unexpected " << tokenKindName(current().kind);
-  if (!current().rawLexeme.empty() && current().kind != TokenKind::END_OF_FILE) {
-    msg << " '" << current().rawLexeme << "'";
-  }
-  msg << ", expected " << expected;
-  diag_.error(current().range.begin, msg.str());
-  hasError_ = true;
-}
-
-void Parser::synchronizeTopLevel() {
-  while (!atEnd()) {
-    if (check(TokenKind::KW_CONST) || check(TokenKind::KW_INT) ||
-        check(TokenKind::KW_VOID) || check(TokenKind::END_OF_FILE)) {
-      return;
-    }
-    advance();
-  }
-}
-
-void Parser::synchronizeStatement() {
-  while (!atEnd()) {
-    if (check(TokenKind::SEMICOLON)) {
-      advance();
-      return;
-    }
-    if (check(TokenKind::RBRACE)) {
-      return;  // Don't consume — block parser needs it.
-    }
-    if (check(TokenKind::KW_IF) || check(TokenKind::KW_WHILE) ||
-        check(TokenKind::KW_BREAK) || check(TokenKind::KW_CONTINUE) ||
-        check(TokenKind::KW_RETURN) || check(TokenKind::LBRACE) ||
-        check(TokenKind::END_OF_FILE)) {
-      return;
-    }
-    // const/int could start a local declaration — stop so parseStmt can handle it.
-    // But if we haven't advanced yet, we must skip one token to avoid infinite loops.
-    if (check(TokenKind::KW_CONST) || check(TokenKind::KW_INT)) {
-      return;
-    }
-    advance();
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Top-level parsing
-// ═══════════════════════════════════════════════════════════════════════════
-
-std::unique_ptr<CompUnit> Parser::parseCompUnit() {
-  auto unit = std::make_unique<CompUnit>();
-
-  while (!check(TokenKind::END_OF_FILE)) {
-    auto item = parseTopLevelItem();
-    if (item) {
-      unit->addItem(std::move(item));
-    } else {
-      synchronizeTopLevel();
-    }
-  }
-
-  // Set range from first to last token.
-  if (!tokens_.empty()) {
-    SourceRange range(tokens_.front().range.begin, current().range.end);
-    unit->setRange(range);
-  }
-
-  return unit;
-}
-
-std::unique_ptr<TopLevelItem> Parser::parseTopLevelItem() {
-  // const → ConstDecl wrapped in GlobalDecl
-  if (check(TokenKind::KW_CONST)) {
-    auto decl = parseDecl();
-    if (!decl) return nullptr;
-    auto gl = std::make_unique<GlobalDecl>(std::move(decl));
-    gl->setRange(gl->declaration()->range());
-    return gl;
-  }
-
-  // void → FuncDef
-  if (check(TokenKind::KW_VOID)) {
-    auto typeTok = advance();
-    auto nameTok = expect(TokenKind::IDENT, "function name");
-    if (hasError_ && current().kind != TokenKind::IDENT) return nullptr;
-    return parseFuncDef(TypeKind::Void, typeTok, nameTok);
-  }
-
-  // int → FuncDef or VarDecl
-  if (check(TokenKind::KW_INT)) {
-    auto typeTok = advance();
-    auto nameTok = expect(TokenKind::IDENT, "function or variable name");
-    if (hasError_ && current().kind != TokenKind::IDENT) return nullptr;
-
-    if (check(TokenKind::LPAREN)) {
-      return parseFuncDef(TypeKind::Int, typeTok, nameTok);
-    }
-
-    // VarDecl: int name = expr ;
-    expect(TokenKind::ASSIGN, "'='");
-    auto init = parseExpr();
-    auto semiTok = expect(TokenKind::SEMICOLON, "';' after variable declaration");
-
-    auto var = std::make_unique<VarDecl>(nameTok.rawLexeme, std::move(init));
-    SourceRange range(typeTok.range.begin, semiTok.range.end);
-    var->setRange(range);
-
-    auto gl = std::make_unique<GlobalDecl>(std::move(var));
-    gl->setRange(range);
-    return gl;
-  }
-
-  reportUnexpected("declaration or function definition");
-  return nullptr;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Declaration parsing
-// ═══════════════════════════════════════════════════════════════════════════
-
-std::unique_ptr<Decl> Parser::parseDecl() {
-  if (check(TokenKind::KW_CONST)) return parseConstDecl();
-  if (check(TokenKind::KW_INT)) return parseVarDecl();
-  reportUnexpected("'const' or 'int'");
-  return nullptr;
-}
-
-std::unique_ptr<ConstDecl> Parser::parseConstDecl() {
-  auto constTok = expect(TokenKind::KW_CONST, "'const'");
-  expect(TokenKind::KW_INT, "'int'");
-  auto nameTok = expect(TokenKind::IDENT, "constant name");
-  expect(TokenKind::ASSIGN, "'='");
-  auto init = parseExpr();
-  auto semiTok = expect(TokenKind::SEMICOLON, "';'");
-
-  auto decl = std::make_unique<ConstDecl>(nameTok.rawLexeme, std::move(init));
-  SourceRange range(constTok.range.begin, semiTok.range.end);
-  decl->setRange(range);
-  return decl;
-}
-
-std::unique_ptr<VarDecl> Parser::parseVarDecl() {
-  auto intTok = expect(TokenKind::KW_INT, "'int'");
-  auto nameTok = expect(TokenKind::IDENT, "variable name");
-  expect(TokenKind::ASSIGN, "'='");
-  auto init = parseExpr();
-  auto semiTok = expect(TokenKind::SEMICOLON, "';'");
-
-  auto decl = std::make_unique<VarDecl>(nameTok.rawLexeme, std::move(init));
-  SourceRange range(intTok.range.begin, semiTok.range.end);
-  decl->setRange(range);
-  return decl;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Function parsing
-// ═══════════════════════════════════════════════════════════════════════════
-
-std::unique_ptr<FuncDef> Parser::parseFuncDef(TypeKind returnType,
-                                               const Token& typeToken,
-                                               const Token& nameToken) {
-  expect(TokenKind::LPAREN, "'('");
-
-  std::vector<ParamDecl> params;
-  if (!check(TokenKind::RPAREN)) {
-    params.push_back(parseParam());
-    while (match(TokenKind::COMMA)) {
-      params.push_back(parseParam());
-    }
-  }
-  expect(TokenKind::RPAREN, "')'");
-
-  auto body = parseBlock();
-
-  auto func = std::make_unique<FuncDef>(returnType, nameToken.rawLexeme,
-                                         std::move(params), std::move(body));
-  SourceRange range(typeToken.range.begin, func->body()->range().end);
-  func->setRange(range);
-  return func;
-}
-
-ParamDecl Parser::parseParam() {
-  expect(TokenKind::KW_INT, "'int'");
-  auto nameTok = expect(TokenKind::IDENT, "parameter name");
-
-  ParamDecl param(nameTok.rawLexeme);
-  // ParamDecl range: from 'int' keyword to identifier end.
-  // We use the name token range as a simple approximation.
-  param.setRange(nameTok.range);
-  return param;
-}
-
-std::unique_ptr<BlockStmt> Parser::parseBlock() {
-  auto lbrace = expect(TokenKind::LBRACE, "'{'");
-  auto block = std::make_unique<BlockStmt>();
-
-  while (!check(TokenKind::RBRACE) && !check(TokenKind::END_OF_FILE)) {
-    auto savedPos = pos_;
-    auto stmt = parseStmt();
-    if (stmt) {
-      // If parseStmt didn't advance (stuck recovery dummy), force progress.
-      if (pos_ == savedPos) {
-        block->addStatement(std::move(stmt));
-        if (!check(TokenKind::RBRACE) && !check(TokenKind::END_OF_FILE)) {
-          advance();
+// ===========================================================================
+// Program: (function_def)+
+// ===========================================================================
+Program Parser::parse_program() {
+    Program prog;
+    while (peek().kind == TokenKind::KwInt || peek().kind == TokenKind::KwVoid) {
+        TokenKind kw = peek().kind;
+        size_t save = pos_;
+        // Peek past "int/void" and "name" to see what follows
+        if (peek(0).kind == TokenKind::KwInt && peek(2).kind != TokenKind::LParen) {
+            // int name; or int name = expr; -> global declaration
+            consume(); // int
+            auto& nt = expect(TokenKind::Identifier, "expected name");
+            std::string name = nt.lexeme;
+            SourceLocation loc = nt.location;
+            if (peek().kind == TokenKind::Equal) {
+                consume();
+                auto init = parse_expr();
+                expect(TokenKind::Semicolon, "expected ';' after global declaration");
+                prog.globals.push_back(GlobalVarDecl(name, std::move(init), loc));
+            } else if (peek().kind == TokenKind::Semicolon) {
+                consume();
+                // Parse for a stable semantic diagnostic aligned with the Java oracle.
+                prog.globals.push_back(GlobalVarDecl(name, nullptr, loc));
+            } else {
+                error("expected '=' or ';' after global variable name");
+            }
+        } else if (kw == TokenKind::KwVoid && peek(2).kind != TokenKind::LParen) {
+            // void name; -> error (void cannot be a global variable)
+            consume(); // void
+            auto& nt = expect(TokenKind::Identifier, "expected name");
+            expect(TokenKind::Semicolon, "unexpected token");
+            error("void variable declaration is not allowed");
+        } else {
+            // Function definition
+            prog.functions.push_back(parse_function_def());
         }
-      } else {
-        block->addStatement(std::move(stmt));
-      }
-    } else {
-      synchronizeStatement();
     }
-  }
-
-  auto rbrace = expect(TokenKind::RBRACE, "'}'");
-  SourceRange range(lbrace.range.begin, rbrace.range.end);
-  block->setRange(range);
-  return block;
+    if (prog.functions.empty() && prog.globals.empty()) error("expected top-level declaration");
+    if (peek().kind != TokenKind::Eof) error("unexpected token");
+    return prog;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Statement parsing
-// ═══════════════════════════════════════════════════════════════════════════
+FunctionDef Parser::parse_function_def() {
+    Type rt = Type::Int;
+    if (match(TokenKind::KwVoid)) rt = Type::Void;
+    else expect(TokenKind::KwInt, "expected 'int' or 'void'");
 
-std::unique_ptr<Stmt> Parser::parseStmt() {
-  if (check(TokenKind::LBRACE)) return parseBlock();
+    auto& name_tok = expect(TokenKind::Identifier, "expected function name");
+    std::string name = name_tok.lexeme;
 
-  if (match(TokenKind::SEMICOLON)) {
-    auto stmt = std::make_unique<EmptyStmt>();
-    stmt->setRange(previous().range);
-    return stmt;
-  }
+    expect(TokenKind::LParen, "expected '('");
+    auto params = parse_params();
+    expect(TokenKind::RParen, "expected ')'");
 
-  if (check(TokenKind::KW_IF)) return parseIfStmt();
-  if (check(TokenKind::KW_WHILE)) return parseWhileStmt();
-
-  if (match(TokenKind::KW_BREAK)) {
-    auto semiTok = expect(TokenKind::SEMICOLON, "';' after 'break'");
-    auto stmt = std::make_unique<BreakStmt>();
-    stmt->setRange(SourceRange(previous().range.begin, semiTok.range.end));
-    return stmt;
-  }
-
-  if (match(TokenKind::KW_CONTINUE)) {
-    auto semiTok = expect(TokenKind::SEMICOLON, "';' after 'continue'");
-    auto stmt = std::make_unique<ContinueStmt>();
-    stmt->setRange(SourceRange(previous().range.begin, semiTok.range.end));
-    return stmt;
-  }
-
-  if (check(TokenKind::KW_RETURN)) return parseReturnStmt();
-
-  if (check(TokenKind::KW_CONST) || check(TokenKind::KW_INT)) {
-    auto decl = parseDecl();
-    if (!decl) return nullptr;
-    auto stmt = std::make_unique<DeclStmt>(std::move(decl));
-    stmt->setRange(stmt->declaration()->range());
-    return stmt;
-  }
-
-  return parseExprOrAssignStmt();
+    auto body = parse_compound_statement();
+    return FunctionDef(rt, std::move(name), std::move(params), std::move(body));
 }
 
-std::unique_ptr<Stmt> Parser::parseIfStmt() {
-  auto ifTok = expect(TokenKind::KW_IF, "'if'");
-  expect(TokenKind::LPAREN, "'('");
-  auto cond = parseExpr();
-  expect(TokenKind::RPAREN, "')'");
-  auto thenBranch = parseStmt();
-
-  // Save range before moving.
-  SourceRange endRange = thenBranch->range();
-
-  std::unique_ptr<Stmt> elseBranch;
-  if (match(TokenKind::KW_ELSE)) {
-    elseBranch = parseStmt();
-    endRange = elseBranch->range();
-  }
-
-  auto stmt = std::make_unique<IfStmt>(std::move(cond), std::move(thenBranch),
-                                        std::move(elseBranch));
-  stmt->setRange(SourceRange(ifTok.range.begin, endRange.end));
-  return stmt;
-}
-
-std::unique_ptr<Stmt> Parser::parseWhileStmt() {
-  auto whileTok = expect(TokenKind::KW_WHILE, "'while'");
-  expect(TokenKind::LPAREN, "'('");
-  auto cond = parseExpr();
-  expect(TokenKind::RPAREN, "')'");
-  auto body = parseStmt();
-
-  auto bodyEnd = body->range().end;
-  auto stmt = std::make_unique<WhileStmt>(std::move(cond), std::move(body));
-  stmt->setRange(SourceRange(whileTok.range.begin, bodyEnd));
-  return stmt;
-}
-
-std::unique_ptr<Stmt> Parser::parseReturnStmt() {
-  auto retTok = expect(TokenKind::KW_RETURN, "'return'");
-
-  if (match(TokenKind::SEMICOLON)) {
-    auto stmt = std::make_unique<ReturnStmt>();
-    stmt->setRange(SourceRange(retTok.range.begin, previous().range.end));
-    return stmt;
-  }
-
-  // If next token can't start an expression, report early.
-  if (check(TokenKind::RBRACE) || check(TokenKind::END_OF_FILE)) {
-    expect(TokenKind::SEMICOLON, "';' or expression");
-    auto stmt = std::make_unique<ReturnStmt>();
-    stmt->setRange(SourceRange(retTok.range.begin, previous().range.end));
-    return stmt;
-  }
-
-  auto val = parseExpr();
-  auto semiTok = expect(TokenKind::SEMICOLON, "';' after return expression");
-
-  auto stmt = std::make_unique<ReturnStmt>(std::move(val));
-  stmt->setRange(SourceRange(retTok.range.begin, semiTok.range.end));
-  return stmt;
-}
-
-std::unique_ptr<Stmt> Parser::parseExprOrAssignStmt() {
-  // Check if this is an assignment: IDENT = expr ;
-  if (check(TokenKind::IDENT)) {
-    // Peek ahead to see if next token is ASSIGN.
-    auto savedPos = pos_;
-
-    auto nameTok = advance();
-    if (check(TokenKind::ASSIGN)) {
-      // It's an assignment.
-      advance(); // consume =
-      auto val = parseExpr();
-      auto semiTok = expect(TokenKind::SEMICOLON, "';'");
-
-      auto stmt = std::make_unique<AssignStmt>(nameTok.rawLexeme, std::move(val));
-      stmt->setRange(SourceRange(nameTok.range.begin, semiTok.range.end));
-      return stmt;
-    }
-
-    // Not an assignment — rewind and parse as expression.
-    pos_ = savedPos;
-  }
-
-  // Expression statement.
-  auto expr = parseExpr();
-  auto semiTok = expect(TokenKind::SEMICOLON, "';'");
-
-  auto stmt = std::make_unique<ExprStmt>(std::move(expr));
-  stmt->setRange(SourceRange(stmt->expression()->range().begin, semiTok.range.end));
-  return stmt;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Expression parsing (precedence climbing)
-// ═══════════════════════════════════════════════════════════════════════════
-
-std::unique_ptr<Expr> Parser::parseExpr() {
-  return parseLogicalOrExpr();
-}
-
-// LogicalOr: logicalAndExpr (|| logicalAndExpr)*
-std::unique_ptr<Expr> Parser::parseLogicalOrExpr() {
-  auto lhs = parseLogicalAndExpr();
-  while (match(TokenKind::OR)) {
-    auto rhs = parseLogicalAndExpr();
-    auto expr = std::make_unique<BinaryExpr>(BinaryOperator::LogicalOr,
-                                              std::move(lhs), std::move(rhs));
-    expr->setRange(SourceRange(expr->lhs()->range().begin,
-                               expr->rhs()->range().end));
-    lhs = std::move(expr);
-  }
-  return lhs;
-}
-
-// LogicalAnd: equalityExpr (&& equalityExpr)*
-std::unique_ptr<Expr> Parser::parseLogicalAndExpr() {
-  auto lhs = parseEqualityExpr();
-  while (match(TokenKind::AND)) {
-    auto rhs = parseEqualityExpr();
-    auto expr = std::make_unique<BinaryExpr>(BinaryOperator::LogicalAnd,
-                                              std::move(lhs), std::move(rhs));
-    expr->setRange(SourceRange(expr->lhs()->range().begin,
-                               expr->rhs()->range().end));
-    lhs = std::move(expr);
-  }
-  return lhs;
-}
-
-// Equality: relationalExpr ((== | !=) relationalExpr)*
-std::unique_ptr<Expr> Parser::parseEqualityExpr() {
-  auto lhs = parseRelationalExpr();
-  while (true) {
-    BinaryOperator op;
-    if (match(TokenKind::EQ)) {
-      op = BinaryOperator::Equal;
-    } else if (match(TokenKind::NE)) {
-      op = BinaryOperator::NotEqual;
-    } else {
-      break;
-    }
-    auto rhs = parseRelationalExpr();
-    auto expr = std::make_unique<BinaryExpr>(op, std::move(lhs), std::move(rhs));
-    expr->setRange(SourceRange(expr->lhs()->range().begin,
-                               expr->rhs()->range().end));
-    lhs = std::move(expr);
-  }
-  return lhs;
-}
-
-// Relational: additiveExpr ((< | <= | > | >=) additiveExpr)*
-std::unique_ptr<Expr> Parser::parseRelationalExpr() {
-  auto lhs = parseAdditiveExpr();
-  while (true) {
-    BinaryOperator op;
-    if (match(TokenKind::LT)) {
-      op = BinaryOperator::Less;
-    } else if (match(TokenKind::LE)) {
-      op = BinaryOperator::LessEqual;
-    } else if (match(TokenKind::GT)) {
-      op = BinaryOperator::Greater;
-    } else if (match(TokenKind::GE)) {
-      op = BinaryOperator::GreaterEqual;
-    } else {
-      break;
-    }
-    auto rhs = parseAdditiveExpr();
-    auto expr = std::make_unique<BinaryExpr>(op, std::move(lhs), std::move(rhs));
-    expr->setRange(SourceRange(expr->lhs()->range().begin,
-                               expr->rhs()->range().end));
-    lhs = std::move(expr);
-  }
-  return lhs;
-}
-
-// Additive: multiplicativeExpr ((+ | -) multiplicativeExpr)*
-std::unique_ptr<Expr> Parser::parseAdditiveExpr() {
-  auto lhs = parseMultiplicativeExpr();
-  while (true) {
-    BinaryOperator op;
-    if (match(TokenKind::PLUS)) {
-      op = BinaryOperator::Add;
-    } else if (match(TokenKind::MINUS)) {
-      op = BinaryOperator::Subtract;
-    } else {
-      break;
-    }
-    auto rhs = parseMultiplicativeExpr();
-    auto expr = std::make_unique<BinaryExpr>(op, std::move(lhs), std::move(rhs));
-    expr->setRange(SourceRange(expr->lhs()->range().begin,
-                               expr->rhs()->range().end));
-    lhs = std::move(expr);
-  }
-  return lhs;
-}
-
-// Multiplicative: unaryExpr ((* | / | %) unaryExpr)*
-std::unique_ptr<Expr> Parser::parseMultiplicativeExpr() {
-  auto lhs = parseUnaryExpr();
-  while (true) {
-    BinaryOperator op;
-    if (match(TokenKind::MUL)) {
-      op = BinaryOperator::Multiply;
-    } else if (match(TokenKind::DIV)) {
-      op = BinaryOperator::Divide;
-    } else if (match(TokenKind::MOD)) {
-      op = BinaryOperator::Modulo;
-    } else {
-      break;
-    }
-    auto rhs = parseUnaryExpr();
-    auto expr = std::make_unique<BinaryExpr>(op, std::move(lhs), std::move(rhs));
-    expr->setRange(SourceRange(expr->lhs()->range().begin,
-                               expr->rhs()->range().end));
-    lhs = std::move(expr);
-  }
-  return lhs;
-}
-
-// Unary: (+ | - | !) unaryExpr | primaryExpr
-std::unique_ptr<Expr> Parser::parseUnaryExpr() {
-  UnaryOperator op;
-  if (match(TokenKind::PLUS)) {
-    op = UnaryOperator::Plus;
-  } else if (match(TokenKind::MINUS)) {
-    op = UnaryOperator::Minus;
-  } else if (match(TokenKind::NOT)) {
-    op = UnaryOperator::LogicalNot;
-  } else {
-    return parsePrimaryExpr();
-  }
-
-  auto operand = parseUnaryExpr();  // right-associative
-  auto expr = std::make_unique<UnaryExpr>(op, std::move(operand));
-  // Range: from the operator to the end of the operand.
-  // Use previous() for the operator token.
-  expr->setRange(SourceRange(previous().range.begin, expr->operand()->range().end));
-  return expr;
-}
-
-// Primary: NUMBER | IDENT | IDENT(args) | (expr)
-std::unique_ptr<Expr> Parser::parsePrimaryExpr() {
-  // Number literal
-  if (check(TokenKind::NUMBER)) {
-    auto tok = advance();
-    auto expr = std::make_unique<IntegerLiteralExpr>(tok.rawLexeme);
-    expr->setRange(tok.range);
-    return expr;
-  }
-
-  // Identifier or function call
-  if (check(TokenKind::IDENT)) {
-    auto nameTok = advance();
-
-    if (match(TokenKind::LPAREN)) {
-      // Function call.
-      std::vector<std::unique_ptr<Expr>> args;
-      if (!check(TokenKind::RPAREN)) {
-        args.push_back(parseExpr());
-        while (match(TokenKind::COMMA)) {
-          args.push_back(parseExpr());
+std::vector<Param> Parser::parse_params() {
+    std::vector<Param> params;
+    if (peek().kind == TokenKind::KwInt) {
+        expect(TokenKind::KwInt, "expected 'int'");
+        auto& t = expect(TokenKind::Identifier, "expected parameter name");
+        params.push_back({t.lexeme});
+        while (peek().kind == TokenKind::Comma) {
+            consume();
+            expect(TokenKind::KwInt, "expected 'int'");
+            auto& t2 = expect(TokenKind::Identifier, "expected parameter name");
+            params.push_back({t2.lexeme});
         }
-      }
-      auto rparen = expect(TokenKind::RPAREN, "')'");
-
-      auto expr = std::make_unique<CallExpr>(nameTok.rawLexeme, std::move(args));
-      expr->setRange(SourceRange(nameTok.range.begin, rparen.range.end));
-      return expr;
     }
-
-    // Simple identifier.
-    auto expr = std::make_unique<IdentifierExpr>(nameTok.rawLexeme);
-    expr->setRange(nameTok.range);
-    return expr;
-  }
-
-  // Parenthesized expression
-  if (check(TokenKind::LPAREN)) {
-    auto lparen = advance();
-    auto inner = parseExpr();
-    auto rparen = expect(TokenKind::RPAREN, "')'");
-    inner->setRange(SourceRange(lparen.range.begin, rparen.range.end));
-    return inner;
-  }
-
-  reportUnexpected("expression");
-  // Create a dummy literal to avoid null.
-  auto dummy = std::make_unique<IntegerLiteralExpr>("0");
-  dummy->setRange(current().range);
-  return dummy;
+    return params;
 }
 
-} // namespace toyc
+// ===========================================================================
+// Statements
+// ===========================================================================
+std::unique_ptr<Stmt> Parser::parse_statement() {
+    switch (peek().kind) {
+    case TokenKind::KwInt: return parse_declaration();
+    case TokenKind::KwIf: return parse_if();
+    case TokenKind::KwWhile: return parse_while();
+    case TokenKind::KwBreak: return parse_break();
+    case TokenKind::KwContinue: return parse_continue();
+    case TokenKind::KwReturn: return parse_return();
+    case TokenKind::LBrace: return parse_compound_statement();
+    default:
+        if (peek().kind == TokenKind::Identifier && peek(1).kind == TokenKind::Equal)
+            return parse_assignment();
+        return parse_expression_statement();
+    }
+}
+
+std::unique_ptr<Stmt> Parser::parse_declaration() {
+    expect(TokenKind::KwInt, "expected 'int'");
+    auto& nt = expect(TokenKind::Identifier, "expected variable name");
+    std::string name = nt.lexeme;
+    SourceLocation loc = nt.location;
+    expect(TokenKind::Equal, "expected '='");
+    auto init = parse_expr();
+    expect(TokenKind::Semicolon, "expected ';'");
+    auto d = std::make_unique<VarDeclStmt>();
+    d->name = std::move(name); d->initializer = std::move(init); d->location = loc;
+    return d;
+}
+
+std::unique_ptr<Stmt> Parser::parse_if() {
+    expect(TokenKind::KwIf, "expected 'if'");
+    expect(TokenKind::LParen, "expected '('");
+    auto cond = parse_expr();
+    expect(TokenKind::RParen, "expected ')'");
+    auto thenS = parse_statement();
+    std::unique_ptr<Stmt> elseS;
+    if (peek().kind == TokenKind::KwElse) { consume(); elseS = parse_statement(); }
+    auto i = std::make_unique<IfStmt>();
+    i->condition = std::move(cond); i->thenStmt = std::move(thenS); i->elseStmt = std::move(elseS);
+    return i;
+}
+
+std::unique_ptr<Stmt> Parser::parse_while() {
+    expect(TokenKind::KwWhile, "expected 'while'");
+    expect(TokenKind::LParen, "expected '('");
+    auto cond = parse_expr();
+    expect(TokenKind::RParen, "expected ')'");
+    auto body = parse_statement();
+    auto w = std::make_unique<WhileStmt>();
+    w->condition = std::move(cond); w->body = std::move(body);
+    return w;
+}
+
+std::unique_ptr<Stmt> Parser::parse_break() {
+    expect(TokenKind::KwBreak, "expected 'break'");
+    expect(TokenKind::Semicolon, "expected ';' after break");
+    return std::make_unique<BreakStmt>();
+}
+
+std::unique_ptr<Stmt> Parser::parse_continue() {
+    expect(TokenKind::KwContinue, "expected 'continue'");
+    expect(TokenKind::Semicolon, "expected ';' after continue");
+    return std::make_unique<ContinueStmt>();
+}
+
+std::unique_ptr<Stmt> Parser::parse_return() {
+    expect(TokenKind::KwReturn, "expected 'return'");
+    if (peek().kind == TokenKind::Semicolon) { consume(); return std::make_unique<ReturnStmt>(nullptr); }
+    auto expr = parse_expr();
+    expect(TokenKind::Semicolon, "expected ';'");
+    return std::make_unique<ReturnStmt>(std::move(expr));
+}
+
+std::unique_ptr<Stmt> Parser::parse_assignment() {
+    auto& nt = consume(); std::string name = nt.lexeme;
+    consume(); // '='
+    auto val = parse_expr();
+    expect(TokenKind::Semicolon, "expected ';'");
+    auto a = std::make_unique<AssignStmt>();
+    a->name = std::move(name); a->value = std::move(val);
+    return a;
+}
+
+std::unique_ptr<Stmt> Parser::parse_expression_statement() {
+    auto expr = parse_expr();
+    expect(TokenKind::Semicolon, "expected ';'");
+    return std::make_unique<ExprStmt>(std::move(expr));
+}
+
+std::unique_ptr<CompoundStmt> Parser::parse_compound_statement() {
+    expect(TokenKind::LBrace, "expected '{'");
+    auto block = std::make_unique<CompoundStmt>();
+    while (peek().kind != TokenKind::RBrace && peek().kind != TokenKind::Eof)
+        block->statements.push_back(parse_statement());
+    expect(TokenKind::RBrace, "expected '}'");
+    return block;
+}
+
+// ===========================================================================
+// Expressions
+// ===========================================================================
+std::unique_ptr<Expr> Parser::parse_expr() { return parse_logical_or(); }
+std::unique_ptr<Expr> Parser::parse_logical_or() {
+    auto left = parse_logical_and();
+    while (peek().kind == TokenKind::PipePipe) { consume();
+        auto r = parse_logical_and(); left = std::make_unique<BinaryExpr>(BinaryOp::Or, std::move(left), std::move(r)); }
+    return left;
+}
+std::unique_ptr<Expr> Parser::parse_logical_and() {
+    auto left = parse_equality();
+    while (peek().kind == TokenKind::AmpAmp) { consume();
+        auto r = parse_equality(); left = std::make_unique<BinaryExpr>(BinaryOp::And, std::move(left), std::move(r)); }
+    return left;
+}
+std::unique_ptr<Expr> Parser::parse_equality() {
+    auto left = parse_relational();
+    while (peek().kind == TokenKind::EqualEqual || peek().kind == TokenKind::BangEqual) {
+        auto op = peek().kind == TokenKind::EqualEqual ? BinaryOp::Eq : BinaryOp::Ne;
+        consume(); auto r = parse_relational();
+        left = std::make_unique<BinaryExpr>(op, std::move(left), std::move(r));
+    }
+    return left;
+}
+std::unique_ptr<Expr> Parser::parse_relational() {
+    auto left = parse_additive();
+    while (peek().kind == TokenKind::Less || peek().kind == TokenKind::Greater ||
+           peek().kind == TokenKind::LessEqual || peek().kind == TokenKind::GreaterEqual) {
+        BinaryOp op;
+        switch (peek().kind) {
+        case TokenKind::Less: op = BinaryOp::Lt; break;
+        case TokenKind::Greater: op = BinaryOp::Gt; break;
+        case TokenKind::LessEqual: op = BinaryOp::Le; break;
+        case TokenKind::GreaterEqual: op = BinaryOp::Ge; break;
+        default: op = BinaryOp::Lt;
+        }
+        consume(); auto r = parse_additive();
+        left = std::make_unique<BinaryExpr>(op, std::move(left), std::move(r));
+    }
+    return left;
+}
+std::unique_ptr<Expr> Parser::parse_additive() {
+    auto left = parse_multiplicative();
+    while (peek().kind == TokenKind::Plus || peek().kind == TokenKind::Minus) {
+        auto op = peek().kind == TokenKind::Plus ? BinaryOp::Add : BinaryOp::Sub;
+        consume(); auto r = parse_multiplicative();
+        left = std::make_unique<BinaryExpr>(op, std::move(left), std::move(r));
+    }
+    return left;
+}
+std::unique_ptr<Expr> Parser::parse_multiplicative() {
+    auto left = parse_unary();
+    while (peek().kind == TokenKind::Star || peek().kind == TokenKind::Slash || peek().kind == TokenKind::Percent) {
+        BinaryOp op;
+        switch (peek().kind) {
+        case TokenKind::Star: op = BinaryOp::Mul; break;
+        case TokenKind::Slash: op = BinaryOp::Div; break;
+        case TokenKind::Percent: op = BinaryOp::Mod; break;
+        default: op = BinaryOp::Mul;
+        }
+        consume(); auto r = parse_unary();
+        left = std::make_unique<BinaryExpr>(op, std::move(left), std::move(r));
+    }
+    return left;
+}
+
+std::unique_ptr<Expr> Parser::parse_unary() {
+    if (match(TokenKind::Minus)) return resolve_unary_minus(parse_unary());
+    if (match(TokenKind::Plus)) return resolve_unary_plus(parse_unary());
+    if (match(TokenKind::Bang)) return std::make_unique<UnaryExpr>(UnaryOp::Not, parse_unary());
+    return resolve_bare_raw_literal(parse_primary());
+}
+
+std::unique_ptr<Expr> Parser::parse_primary() {
+    if (peek().kind == TokenKind::IntegerLiteral) {
+        auto t = consume(); return std::make_unique<RawIntLiteralExpr>(t.int_value);
+    }
+    if (peek().kind == TokenKind::Identifier) {
+        auto t = consume();
+        std::string name = t.lexeme; SourceLocation loc = t.location;
+        // Check for call: ID ( args )
+        if (peek().kind == TokenKind::LParen) {
+            return parse_call_suffix(std::move(name), loc);
+        }
+        return std::make_unique<IdentifierExpr>(std::move(name), loc);
+    }
+    if (match(TokenKind::LParen)) {
+        auto expr = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return expr;
+    }
+    error("expected expression");
+    return nullptr;
+}
+
+std::unique_ptr<Expr> Parser::parse_call_suffix(std::string callee, SourceLocation loc) {
+    consume(); // '('
+    std::vector<std::unique_ptr<Expr>> args;
+    if (peek().kind != TokenKind::RParen) {
+        args.push_back(parse_expr());
+        while (peek().kind == TokenKind::Comma) {
+            consume();
+            args.push_back(parse_expr());
+        }
+    }
+    expect(TokenKind::RParen, "expected ')'");
+    return std::make_unique<CallExpr>(std::move(callee), std::move(args), Type::Int);
+}
+
+// ===========================================================================
+// Raw literal resolution
+// ===========================================================================
+std::unique_ptr<Expr> Parser::resolve_unary_minus(std::unique_ptr<Expr> operand) {
+    auto* r = dynamic_cast<RawIntLiteralExpr*>(operand.get());
+    if (r) {
+        if (r->magnitude == 2147483648ULL) return std::make_unique<IntLiteralExpr>(INT32_MIN);
+        if (r->magnitude > 2147483648ULL) {
+            std::ostringstream m; m << "integer literal too large for 32-bit signed int";
+            error(m.str());
+        }
+        return std::make_unique<IntLiteralExpr>(-static_cast<int32_t>(r->magnitude));
+    }
+    return std::make_unique<UnaryExpr>(UnaryOp::Minus, std::move(operand));
+}
+std::unique_ptr<Expr> Parser::resolve_unary_plus(std::unique_ptr<Expr> operand) {
+    auto* r = dynamic_cast<RawIntLiteralExpr*>(operand.get());
+    if (r) {
+        if (r->magnitude > static_cast<uint64_t>(INT32_MAX)) error("integer literal too large");
+        return std::make_unique<IntLiteralExpr>(static_cast<int32_t>(r->magnitude));
+    }
+    return std::make_unique<UnaryExpr>(UnaryOp::Plus, std::move(operand));
+}
+std::unique_ptr<Expr> Parser::resolve_bare_raw_literal(std::unique_ptr<Expr> primary) {
+    auto* r = dynamic_cast<RawIntLiteralExpr*>(primary.get());
+    if (r) {
+        if (r->magnitude > static_cast<uint64_t>(INT32_MAX)) error("integer literal too large");
+        return std::make_unique<IntLiteralExpr>(static_cast<int32_t>(r->magnitude));
+    }
+    return primary;
+}

@@ -1,0 +1,50 @@
+name|kind|expected|java_compile|cpp_compile|java_link|cpp_link|java_spike|cpp_spike|java_signed|cpp_signed|conclusion|note
+p1_return_0|runtime|0|exit=0|exit=0|exit=0|exit=0|PARSE_FAIL,exit=124,raw=,no tohost pattern|PARSE_FAIL,exit=124,raw=,no tohost pattern|||CPP_UNVERIFIED|
+p1_return_42|runtime|42|exit=0|exit=0|exit=0|exit=0|OK,exit=255,raw=0x2a,direct tohost decode|OK,exit=255,raw=0x2a,direct tohost decode|42|42|CONFIRMED_EQUIVALENT|
+p1_return_minus_1|runtime|-1|exit=0|exit=0|exit=0|exit=0|OK,exit=255,raw=-1,FAILED negative tohost direct decode|OK,exit=255,raw=-1,FAILED negative tohost direct decode|-1|-1|CONFIRMED_EQUIVALENT|
+p1_int_min|runtime|-2147483648|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||JAVA_UNVERIFIED|java compile failed
+p1_precedence|runtime|7|exit=0|exit=0|exit=0|exit=0|OK,exit=3,raw=3,FAILED tohost decode|OK,exit=3,raw=3,FAILED tohost decode|7|7|CONFIRMED_EQUIVALENT|
+p1_parentheses|runtime|9|exit=0|exit=0|exit=0|exit=0|OK,exit=4,raw=4,FAILED tohost decode|OK,exit=4,raw=4,FAILED tohost decode|9|9|CONFIRMED_EQUIVALENT|
+p1_div_mod|runtime|5|exit=0|exit=0|exit=0|exit=0|OK,exit=2,raw=2,FAILED tohost decode|OK,exit=2,raw=2,FAILED tohost decode|5|5|CONFIRMED_EQUIVALENT|
+p1_logic_compare|runtime|1|exit=0|exit=0|exit=0|exit=0|OK,exit=0,raw=0,empty output with spike exit 0|OK,exit=0,raw=0,empty output with spike exit 0|0|0|DIVERGENT|same result differs from expected
+p1_logic_norm_and|runtime|1|exit=0|exit=0|exit=0|exit=0|OK,exit=0,raw=0,empty output with spike exit 0|OK,exit=0,raw=0,empty output with spike exit 0|0|0|DIVERGENT|same result differs from expected
+p1_logic_norm_or|runtime|1|exit=0|exit=0|exit=0|exit=0|OK,exit=0,raw=0,empty output with spike exit 0|OK,exit=0,raw=0,empty output with spike exit 0|0|0|DIVERGENT|same result differs from expected
+p1_short_and_div0|runtime|0|exit=0|exit=0|exit=0|exit=0|PARSE_FAIL,exit=124,raw=,no tohost pattern|PARSE_FAIL,exit=124,raw=,no tohost pattern|||CPP_UNVERIFIED|
+p1_short_or_div0|runtime|1|exit=0|exit=0|exit=0|exit=0|OK,exit=0,raw=0,empty output with spike exit 0|OK,exit=0,raw=0,empty output with spike exit 0|0|0|DIVERGENT|same result differs from expected
+p2_local_init|runtime|7|exit=0|exit=0|exit=0|exit=0|OK,exit=3,raw=3,FAILED tohost decode|OK,exit=3,raw=3,FAILED tohost decode|7|7|CONFIRMED_EQUIVALENT|
+p2_assignment|runtime|42|exit=0|exit=0|exit=0|exit=0|OK,exit=255,raw=0x2a,direct tohost decode|OK,exit=255,raw=0x2a,direct tohost decode|42|42|CONFIRMED_EQUIVALENT|
+p2_scope_shadow|runtime|2|exit=0|exit=0|exit=0|exit=0|OK,exit=255,raw=0x2,direct tohost decode|OK,exit=255,raw=0x2,direct tohost decode|2|2|CONFIRMED_EQUIVALENT|
+p2_dangling_else|runtime|2|exit=0|exit=0|exit=0|exit=0|OK,exit=255,raw=0x2,direct tohost decode|OK,exit=255,raw=0x2,direct tohost decode|2|2|CONFIRMED_EQUIVALENT|
+p2_while_continue_sum|runtime|25|exit=0|exit=0|exit=0|exit=0|OK,exit=12,raw=12,FAILED tohost decode|OK,exit=12,raw=12,FAILED tohost decode|25|25|CONFIRMED_EQUIVALENT|
+p2_while_break|runtime|3|exit=0|exit=0|exit=0|exit=0|OK,exit=1,raw=1,FAILED tohost decode|OK,exit=1,raw=1,FAILED tohost decode|3|3|CONFIRMED_EQUIVALENT|
+p2_add_call|runtime|42|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x2a,direct tohost decode|SKIP|42||CPP_UNVERIFIED|
+p2_fact|runtime|120|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x78,direct tohost decode|SKIP|120||CPP_UNVERIFIED|
+p2_fib|runtime|21|exit=0|exit=0|exit=0|exit=1|OK,exit=10,raw=10,FAILED tohost decode|SKIP|21||CPP_UNVERIFIED|
+p2_nested_call|runtime|42|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x2a,direct tohost decode|SKIP|42||CPP_UNVERIFIED|
+p2_void_sink|runtime|42|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x2a,direct tohost decode|SKIP|42||CPP_UNVERIFIED|
+p2_sum9|runtime|45|exit=0|exit=0|exit=0|exit=1|OK,exit=22,raw=22,FAILED tohost decode|SKIP|45||CPP_UNVERIFIED|
+p2_sum12|runtime|78|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x4e,direct tohost decode|SKIP|78||CPP_UNVERIFIED|
+p2_sum9_nested_ids|runtime|45|exit=0|exit=0|exit=0|exit=1|OK,exit=22,raw=22,FAILED tohost decode|SKIP|45||CPP_UNVERIFIED|
+p2_forward9|runtime|45|exit=0|exit=0|exit=0|exit=1|OK,exit=22,raw=22,FAILED tohost decode|SKIP|45||CPP_UNVERIFIED|
+p2_sumdown9|runtime|24|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x18,direct tohost decode|SKIP|24||CPP_UNVERIFIED|
+p2c_global_read|runtime|7|exit=0|exit=0|exit=0|exit=0|OK,exit=3,raw=3,FAILED tohost decode|OK,exit=3,raw=3,FAILED tohost decode|7|7|CONFIRMED_EQUIVALENT|
+p2c_global_const_expr|runtime|7|exit=0|exit=0|exit=0|exit=0|OK,exit=3,raw=3,FAILED tohost decode|PARSE_FAIL,exit=124,raw=,no tohost pattern|7||CPP_UNVERIFIED|
+p2c_global_write|runtime|42|exit=0|exit=0|exit=0|exit=0|OK,exit=255,raw=0x2a,direct tohost decode|OK,exit=255,raw=0x2a,direct tohost decode|42|42|CONFIRMED_EQUIVALENT|
+p2c_global_shadow_local|runtime|42|exit=0|exit=0|exit=0|exit=0|OK,exit=255,raw=0x2a,direct tohost decode|OK,exit=255,raw=0x2a,direct tohost decode|42|42|CONFIRMED_EQUIVALENT|
+p2c_global_shadow_param|runtime|42|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x2a,direct tohost decode|SKIP|42||CPP_UNVERIFIED|
+p2c_global_state_bump|runtime|5|exit=True 124|exit=0|SKIP|exit=1|SKIP|SKIP|||JAVA_UNVERIFIED|java compile failed
+p2c_global_cross_fn|runtime|42|exit=0|exit=0|exit=0|exit=1|OK,exit=255,raw=0x2a,direct tohost decode|SKIP|42||CPP_UNVERIFIED|
+p2c_global_ninth_arg|runtime|45|exit=0|exit=0|exit=0|exit=1|OK,exit=22,raw=22,FAILED tohost decode|SKIP|45||CPP_UNVERIFIED|
+p2c_global_init_short_and|runtime|0|exit=0|exit=0|exit=0|exit=0|PARSE_FAIL,exit=124,raw=,no tohost pattern|PARSE_FAIL,exit=124,raw=,no tohost pattern|||CPP_UNVERIFIED|
+p2c_global_init_short_or|runtime|1|exit=0|exit=0|exit=0|exit=0|OK,exit=0,raw=0,empty output with spike exit 0|PARSE_FAIL,exit=124,raw=,no tohost pattern|0||CPP_UNVERIFIED|
+p2c_global_uninit|runtime|0|exit=1|exit=0|SKIP|exit=0|SKIP|PARSE_FAIL,exit=124,raw=,no tohost pattern|||JAVA_UNVERIFIED|java compile failed
+diag_redef_local|compile_error|redefinition|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_undef_var|compile_error|undeclared|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_break_outside|compile_error|break|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_continue_outside|compile_error|continue|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_missing_return|compile_error|return|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_wrong_arg_count|compile_error|expects|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_void_return_value|compile_error|void|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_void_in_expr|compile_error|void|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||LIKELY_EQUIVALENT|cpp stderr lacks keyword void
+diag_global_init_id|compile_error|constant|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|
+diag_global_init_call|compile_error|constant|exit=1|exit=1|SKIP|SKIP|SKIP|SKIP|||CONFIRMED_EQUIVALENT|

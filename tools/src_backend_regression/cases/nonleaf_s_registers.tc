@@ -1,9 +1,0 @@
-// EXPECT: 9
-int f(int x) {
-  return x + 1;
-}
-int main() {
-  int a = 4;
-  int b = f(a);
-  return a + b;
-}

@@ -1,88 +1,62 @@
 #pragma once
-/// Module — the top-level IR container.
-/// Holds all functions and global definitions for one compilation unit.
 
-#include "toyc/ir/function.h"
-#include "toyc/ir/ir_type.h"
-#include "toyc/support/ids.h"
+#include "function.h"
 
 #include <memory>
-#include <optional>
-#include <string>
 #include <vector>
 
-namespace toyc {
+// =============================================================================
+// Module — top-level IR unit (compilation unit).
+//
+// Owns:
+//   - All Function objects (unique_ptr)
+//   - Global variables and global constants (unique_ptr<Value> arena)
+//   - Global constants (Constant*, subset of owned_values_)
+// =============================================================================
 
-/// Global variable or constant kind.
-enum class GlobalKind : uint8_t {
-  Variable,       ///< Mutable global variable.
-  Constant,       ///< Compile-time constant.
-  InternalGuard,  ///< Internal guard for runtime init.
-};
-
-/// How a global is initialized at the IR level.
-enum class IRGlobalInitKind : uint8_t {
-  Static,                ///< Value known at compile time.
-  RuntimeZeroInitialized, ///< Initialized at runtime (starts as zero).
-};
-
-/// A global definition in the module.
-struct IRGlobal {
-  GlobalId id;
-  std::optional<SymbolId> sourceSymbol;  ///< None for internal globals.
-  std::string name;
-  IRType type = I32Type;
-  GlobalKind kind = GlobalKind::Variable;
-  IRGlobalInitKind initKind = IRGlobalInitKind::Static;
-  int32_t staticInitialValue = 0;
-  bool isInternal = false;
-};
-
-/// The top-level IR module.
 class Module {
 public:
-  Module() = default;
+    // --- Functions ---
+    const std::vector<std::unique_ptr<Function>>& functions() const { return functions_; }
+    Function* main_function() const { return main_; }
+    void add_function(std::unique_ptr<Function> fn);
 
-  // Move operations: must rebind Function::parentModule_ after moving.
-  Module(Module&& other) noexcept;
-  Module& operator=(Module&& other) noexcept;
+    // --- Globals ---
+    const std::vector<GlobalVar*>& globals() const { return globals_; }
+    void add_global(GlobalVar* gv);
 
-  // Copy is deleted — IDs would conflict.
-  Module(const Module&) = delete;
-  Module& operator=(const Module&) = delete;
+    const std::vector<Constant*>& global_constants() const { return global_constants_; }
+    void add_global_constant(Constant* c);
 
-  /// Create a new function in this module.
-  Function* createFunction(std::string name, IRType returnType);
+    // --- Module-level arena ---
+    // For GlobalVar and module-level Constant allocation.
+    GlobalVar* new_global_var(const std::string& name, int32_t initial_value);
+    Constant* new_global_constant(const std::string& name, int32_t value);
 
-  /// Create a global definition.
-  GlobalId createGlobal(IRGlobal global);
-
-  /// Accessors.
-  [[nodiscard]] const std::vector<std::unique_ptr<Function>>& functions() const { return funcs_; }
-  [[nodiscard]] const std::vector<IRGlobal>& globals() const { return globals_; }
-
-  /// Find a global by id.
-  [[nodiscard]] const IRGlobal* findGlobal(GlobalId id) const;
-
-  /// Find a function by id.
-  [[nodiscard]] const Function* findFunction(FunctionId id) const;
-
-  /// Find a function by name.
-  [[nodiscard]] Function* findFunctionByName(const std::string& name);
-
-  /// Allocate module-unique IDs. Used by Function during creation.
-  ValueId allocValueId() { return ValueId(nextValueId_++); }
-  SlotId allocSlotId() { return SlotId(nextSlotId_++); }
-  BlockId allocBlockId() { return BlockId(nextBlockId_++); }
+    // Unnamed constant factory.
+    Constant* new_constant(int32_t value);
 
 private:
-  std::vector<std::unique_ptr<Function>> funcs_;
-  std::vector<IRGlobal> globals_;
-  uint32_t nextFuncId_ = 0;
-  uint32_t nextGlobalId_ = 0;
-  uint32_t nextValueId_ = 0;
-  uint32_t nextSlotId_ = 0;
-  uint32_t nextBlockId_ = 0;
+    std::vector<std::unique_ptr<Function>> functions_;
+    Function* main_ = nullptr;
+
+    std::vector<GlobalVar*> globals_;
+    std::vector<Constant*> global_constants_;
+
+    // Arena for module-level Values (GlobalVar, unnamed Constant).
+    std::vector<std::unique_ptr<Value>> owned_values_;
+
+    uint32_t next_global_const_id_ = 0;
 };
 
-} // namespace toyc
+// Convenience: top-level program wrapper.
+class IRProgram {
+public:
+    explicit IRProgram(std::unique_ptr<Module> mod)
+        : module_(std::move(mod)) {}
+
+    Module* module() const { return module_.get(); }
+
+private:
+    std::unique_ptr<Module> module_;
+};

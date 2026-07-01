@@ -1,0 +1,1 @@
+toyc: compilation failed: semantic error: global variable initializer must be compile-time constant: b

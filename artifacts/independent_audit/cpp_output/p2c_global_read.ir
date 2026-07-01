@@ -1,0 +1,10 @@
+module {
+  global @g = 7
+}
+
+func @main() -> i32 {
+entry.0:
+  %t0 = globaladdr @g
+  %t1 = load %t0
+  ret %t1
+}

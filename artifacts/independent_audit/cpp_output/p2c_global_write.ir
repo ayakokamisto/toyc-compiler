@@ -1,0 +1,16 @@
+module {
+  global @g = 1
+}
+
+func @main() -> i32 {
+entry.0:
+  %t0 = globaladdr @g
+  %t1 = globaladdr @g
+  %t2 = load %t1
+  %t3 = imm 41
+  %t4 = add %t2, %t3
+  store %t4, %t0
+  %t5 = globaladdr @g
+  %t6 = load %t5
+  ret %t6
+}

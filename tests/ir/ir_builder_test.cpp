@@ -1,134 +1,131 @@
-/// IRBuilder tests — comprehensive instruction emission.
-
-#include "toyc/ir/basic_block.h"
-#include "toyc/ir/builder.h"
-#include "toyc/ir/function.h"
-#include "toyc/ir/instruction.h"
-#include "toyc/ir/module.h"
-#include "toyc/ir/opcode.h"
-#include "toyc/support/ids.h"
-
 #include <gtest/gtest.h>
 
-namespace toyc {
+#include "toyc/frontend/lexer.h"
+#include "toyc/frontend/parser.h"
+#include "toyc/frontend/semantic_analyzer.h"
+#include "toyc/ir/ir_builder.h"
+#include "toyc/ir/ir_printer.h"
 
-class BuilderTest : public ::testing::Test {
-protected:
-  Module mod;
-  Function* func = nullptr;
-  IRBuilder builder;
-
-  void SetUp() override {
-    func = mod.createFunction("test", I32Type);
-    builder.setFunction(func);
-    auto entry = builder.createBlock("entry");
-    builder.setInsertBlock(entry);
-  }
+class TestHelper {
+public:
+    static IRProgram* build(const std::string& source) {
+        Lexer lexer(source);
+        auto tokens = lexer.tokenize();
+        Parser parser(tokens);
+        Program program = parser.parse_program();
+        SemanticAnalyzer sema;
+        bool ok = sema.analyze(program);
+        if (!ok) return nullptr;
+        return programs_.emplace_back(IRBuilder::build(program)).get();
+    }
+private:
+    static std::vector<std::unique_ptr<IRProgram>> programs_;
 };
+std::vector<std::unique_ptr<IRProgram>> TestHelper::programs_;
 
-TEST_F(BuilderTest, ConstIntUniqueValues) {
-  auto v1 = builder.emitConstInt(1);
-  auto v2 = builder.emitConstInt(2);
-  EXPECT_NE(v1, v2);
-  EXPECT_EQ(func->values().size(), 2u);
+TEST(IRBuilderTest, SimpleReturn42) {
+    auto* ir = TestHelper::build("int main() { return 42; }");
+    ASSERT_NE(ir, nullptr);
+    std::string out = IRPrinter::print(*ir);
+    EXPECT_NE(out.find("imm 42"), std::string::npos);
+    EXPECT_NE(out.find("ret"), std::string::npos);
 }
 
-TEST_F(BuilderTest, LoadGlobalAndStoreGlobal) {
-  IRGlobal g;
-  g.name = "x";
-  g.kind = GlobalKind::Variable;
-  g.initKind = IRGlobalInitKind::Static;
-  GlobalId gid = mod.createGlobal(std::move(g));
-
-  auto val = builder.emitConstInt(42);
-  builder.emitStoreGlobal(gid, val);
-  auto loaded = builder.emitLoadGlobal(gid);
-
-  auto* bb = func->entryBlock();
-  EXPECT_EQ(bb->instructions().size(), 3u);
-  EXPECT_EQ(bb->instructions()[1]->opcode, Opcode::GlobalStore);
-  EXPECT_EQ(bb->instructions()[2]->opcode, Opcode::GlobalLoad);
+TEST(IRBuilderTest, ReturnZero) {
+    auto* ir = TestHelper::build("int main() { return 0; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("imm 0"), std::string::npos);
 }
 
-TEST_F(BuilderTest, UnaryOperations) {
-  auto val = builder.emitConstInt(5);
-  auto neg = builder.emitUnary(UnaryOpcode::Negate, val);
-  auto notVal = builder.emitUnary(UnaryOpcode::LogicalNot, val);
-
-  EXPECT_NE(neg, notVal);
-  auto* bb = func->entryBlock();
-  EXPECT_EQ(bb->instructions()[1]->opcode, Opcode::Unary);
-  EXPECT_EQ(bb->instructions()[1]->unaryOp, UnaryOpcode::Negate);
-  EXPECT_EQ(bb->instructions()[2]->opcode, Opcode::Unary);
-  EXPECT_EQ(bb->instructions()[2]->unaryOp, UnaryOpcode::LogicalNot);
+TEST(IRBuilderTest, BinaryAdd) {
+    auto* ir = TestHelper::build("int main() { return 2+3; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("add"), std::string::npos);
 }
 
-TEST_F(BuilderTest, AllBinaryOperations) {
-  auto a = builder.emitConstInt(10);
-  auto b = builder.emitConstInt(3);
-
-  auto add = builder.emitBinary(BinaryOpcode::Add, a, b);
-  auto sub = builder.emitBinary(BinaryOpcode::Subtract, a, b);
-  auto mul = builder.emitBinary(BinaryOpcode::Multiply, a, b);
-  auto div = builder.emitBinary(BinaryOpcode::Divide, a, b);
-  auto mod = builder.emitBinary(BinaryOpcode::Modulo, a, b);
-
-  EXPECT_NE(add, sub);
-  EXPECT_NE(sub, mul);
-  EXPECT_NE(mul, div);
-  EXPECT_NE(div, mod);
-  EXPECT_EQ(func->entryBlock()->instructions().size(), 7u);  // 2 const + 5 binary
+TEST(IRBuilderTest, Compare) {
+    auto* ir = TestHelper::build("int main() { return 3<5; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("cmp lt"), std::string::npos);
 }
 
-TEST_F(BuilderTest, AllCompareOperations) {
-  auto a = builder.emitConstInt(1);
-  auto b = builder.emitConstInt(2);
-
-  auto eq = builder.emitCompare(ComparePredicate::Equal, a, b);
-  auto ne = builder.emitCompare(ComparePredicate::NotEqual, a, b);
-  auto lt = builder.emitCompare(ComparePredicate::Less, a, b);
-  auto le = builder.emitCompare(ComparePredicate::LessEqual, a, b);
-  auto gt = builder.emitCompare(ComparePredicate::Greater, a, b);
-  auto ge = builder.emitCompare(ComparePredicate::GreaterEqual, a, b);
-
-  EXPECT_NE(eq, ne);
-  EXPECT_NE(lt, le);
-  EXPECT_NE(gt, ge);
+TEST(IRBuilderTest, UnaryMinus) {
+    auto* ir = TestHelper::build("int main() { return -42; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("neg"), std::string::npos);
 }
 
-TEST_F(BuilderTest, CallWithArguments) {
-  auto* callee = mod.createFunction("add", I32Type);
-  auto a = builder.emitConstInt(1);
-  auto b = builder.emitConstInt(2);
-  std::vector<ValueId> args = {a, b};
-  auto result = builder.emitCall(callee->id(), args);
-
-  EXPECT_TRUE(result.has_value());
-  auto* bb = func->entryBlock();
-  EXPECT_EQ(bb->instructions().back()->opcode, Opcode::Call);
-  EXPECT_EQ(bb->instructions().back()->arguments.size(), 2u);
+TEST(IRBuilderTest, UnaryNot) {
+    auto* ir = TestHelper::build("int main() { return !0; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("not"), std::string::npos);
 }
 
-TEST_F(BuilderTest, CallVoidFunction) {
-  auto* callee = mod.createFunction("print", VoidIRType);
-  auto arg = builder.emitConstInt(42);
-  std::vector<ValueId> args = {arg};
-  auto result = builder.emitCall(callee->id(), args);
-
-  // The builder conservatively creates a result; lowering handles void correctly.
-  EXPECT_TRUE(result.has_value());
+TEST(IRBuilderTest, PrinterStability) {
+    auto* ir = TestHelper::build("int main() { return 1+2*3; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_EQ(IRPrinter::print(*ir), IRPrinter::print(*ir));
 }
 
-TEST_F(BuilderTest, TerminatorsBlockNewInstructions) {
-  builder.emitReturn(std::nullopt);
-  EXPECT_TRUE(func->entryBlock()->hasTerminator());
+TEST(IRBuilderTest, LogicalAnd) {
+    auto* ir = TestHelper::build("int main() { return 1 && 0; }");
+    ASSERT_NE(ir, nullptr);
+    std::string out = IRPrinter::print(*ir);
+    EXPECT_NE(out.find("land.rhs"), std::string::npos);
+    EXPECT_NE(out.find("land.end"), std::string::npos);
+    EXPECT_NE(out.find("alloca"), std::string::npos);
 }
 
-TEST_F(BuilderTest, MultipleBlocks) {
-  auto b1 = builder.createBlock("block1");
-  auto b2 = builder.createBlock("block2");
-  EXPECT_EQ(func->blocks().size(), 3u);  // entry + 2
-  EXPECT_NE(b1, b2);
+TEST(IRBuilderTest, LogicalOr) {
+    auto* ir = TestHelper::build("int main() { return 1 || 0; }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("lor.rhs"), std::string::npos);
 }
 
-} // namespace toyc
+TEST(IRBuilderTest, ShortCircuitAndDivZero) {
+    auto* ir = TestHelper::build("int main() { return 0 && (1/0); }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("land.rhs"), std::string::npos);
+}
+
+TEST(IRBuilderTest, ShortCircuitOrDivZero) {
+    auto* ir = TestHelper::build("int main() { return 1 || (1/0); }");
+    ASSERT_NE(ir, nullptr);
+    EXPECT_NE(IRPrinter::print(*ir).find("lor.rhs"), std::string::npos);
+}
+
+TEST(IRBuilderTest, VariableDeclaration) {
+    auto* ir = TestHelper::build("int main() { int x = 42; return x; }");
+    ASSERT_NE(ir, nullptr);
+    std::string out = IRPrinter::print(*ir);
+    EXPECT_NE(out.find("alloca"), std::string::npos);
+    EXPECT_NE(out.find("store"), std::string::npos);
+    EXPECT_NE(out.find("load"), std::string::npos);
+}
+
+TEST(IRBuilderTest, Assignment) {
+    auto* ir = TestHelper::build("int main() { int x = 0; x = 99; return x; }");
+    ASSERT_NE(ir, nullptr);
+    std::string out = IRPrinter::print(*ir);
+    EXPECT_NE(out.find("store"), std::string::npos);
+}
+
+TEST(IRBuilderTest, IfElse) {
+    auto* ir = TestHelper::build(
+        "int main() { int x = 1; if (x) return 7; else return 9; }");
+    ASSERT_NE(ir, nullptr);
+    std::string out = IRPrinter::print(*ir);
+    EXPECT_NE(out.find("cbr"), std::string::npos);
+    EXPECT_NE(out.find("if.then"), std::string::npos);
+    EXPECT_NE(out.find("if.else"), std::string::npos);
+}
+
+TEST(IRBuilderTest, WhileLoop) {
+    auto* ir = TestHelper::build(
+        "int main() { while (0) return 1; return 0; }");
+    ASSERT_NE(ir, nullptr);
+    std::string out = IRPrinter::print(*ir);
+    EXPECT_NE(out.find("while.cond"), std::string::npos);
+    EXPECT_NE(out.find("while.body"), std::string::npos);
+    EXPECT_NE(out.find("while.end"), std::string::npos);
+}
