@@ -1,3 +1,0 @@
-int g = 3;
-int addg(int x) { return x + g; }
-int main() { return addg(39); }

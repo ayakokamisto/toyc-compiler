@@ -22,31 +22,11 @@
 *.gcov
 coverage/
 
-# Reference code (read-only)
+# Directories not pushed to remote
 /src2/
 /toy-c-compiler-master/
 /tools/
-!/tools/
-/tools/*
-!/tools/triple_diff/
-!/tools/triple_diff/**
-/tools/triple_diff/reports/runtime/*
-!/tools/triple_diff/reports/runtime/.gitkeep
-!/tools/triple_diff/cases/
-!/tools/triple_diff/cases/**
-/tools/triple_diff/cases/*.s
-/tools/triple_diff/cases/*.elf
-/tools/triple_diff/cases/*.log
-!/tools/src_backend_regression/
-!/tools/src_backend_regression/**
-/tools/src_backend_regression/reports/*.s
-/tools/src_backend_regression/reports/*.stderr
-/tools/src_backend_regression/reports/*.elf
-!/tools/src_backend_regression/reports/latest_runtime.md
-/tools/src_backend_regression/reports/runtime/*
-!/tools/src_backend_regression/reports/runtime/.gitkeep
-!/tools/src_backend_regression/reports/.gitkeep
-!/tools/src_backend_regression/reports/latest.md
+/artifacts/
 
 # OS
 .DS_Store

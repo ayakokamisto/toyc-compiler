@@ -1,3 +1,0 @@
-/mnt/e/TOYC/artifacts/independent_audit/cpp_output/p2_nested_call.s: Assembler messages:
-/mnt/e/TOYC/artifacts/independent_audit/cpp_output/p2_nested_call.s:21: Error: symbol `entry.0' is already defined
-/mnt/e/TOYC/artifacts/independent_audit/cpp_output/p2_nested_call.s:46: Error: symbol `entry.0' is already defined

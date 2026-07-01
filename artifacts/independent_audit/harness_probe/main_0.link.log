@@ -1,5 +1,0 @@
-start64.s: Assembler messages:
-start64.s: Warning: end of file not at end of a line; newline inserted
-main_0.s: Assembler messages:
-main_0.s: Warning: end of file not at end of a line; newline inserted
-/usr/lib/gcc/riscv64-unknown-elf/13.2.0/../../../riscv64-unknown-elf/bin/ld: warning: main_0.elf has a LOAD segment with RWX permissions

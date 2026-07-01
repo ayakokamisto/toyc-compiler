@@ -1,2 +1,0 @@
-int g = 0 && (1 / 0);
-int main() { return g; }

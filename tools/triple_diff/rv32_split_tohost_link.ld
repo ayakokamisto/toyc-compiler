@@ -1,6 +1,0 @@
-SECTIONS {
-  . = 0x80000000;
-  .text : { *(.text) }
-  .tohost : { *(.tohost) }
-  .data : { *(.data) }
-}

@@ -1,3 +1,0 @@
-int id(int x) { return x; }
-int g = id(7);
-int main() { return g; }

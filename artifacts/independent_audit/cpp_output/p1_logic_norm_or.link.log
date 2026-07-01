@@ -1,1 +1,0 @@
-/usr/lib/gcc/riscv64-unknown-elf/13.2.0/../../../riscv64-unknown-elf/bin/ld: warning: /mnt/e/TOYC/artifacts/independent_audit/cpp_output/p1_logic_norm_or.elf has a LOAD segment with RWX permissions
